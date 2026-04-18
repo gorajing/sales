@@ -9,6 +9,8 @@ export interface SpawnClaudeOptions<T> {
   model?: Model;
   cwd?: string;
   timeoutMs?: number;
+  /** Tool names to allow (e.g. ['WebFetch', 'WebSearch']). Passed as --allowed-tools. */
+  allowedTools?: string[];
 }
 
 export class ClaudeError extends Error {
@@ -38,6 +40,7 @@ function release() {
 
 export async function spawnClaude<T>({
   prompt, schema, model = 'sonnet', cwd = process.cwd(), timeoutMs = 120_000,
+  allowedTools,
 }: SpawnClaudeOptions<T>): Promise<T> {
   await acquire();
   try {
@@ -46,6 +49,9 @@ export async function spawnClaude<T>({
       '--output-format', 'json',
       '--model', model,
     ];
+    if (allowedTools && allowedTools.length > 0) {
+      args.push('--allowed-tools', allowedTools.join(','));
+    }
     const bin = process.env.CLAUDE_BIN ?? 'claude';
 
     return await new Promise<T>((resolve, reject) => {

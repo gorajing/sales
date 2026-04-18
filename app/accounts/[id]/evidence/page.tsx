@@ -3,6 +3,7 @@ import { eq, desc } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { PasteForm } from './PasteForm';
+import { ResearchButton } from './ResearchButton';
 import { AuditControls } from './AuditControls';
 import { DisputedActions } from './DisputedActions';
 
@@ -30,6 +31,7 @@ export default async function EvidencePage({ params }: { params: Promise<{ id: s
       <Link href={`/accounts/${id}`} className="text-sm text-neutral-500">← {account.name}</Link>
       <h1 className="mt-2 text-2xl font-semibold">Evidence</h1>
       <PasteForm accountId={id} />
+      <ResearchButton accountId={id} />
       <AuditControls accountId={id} />
       <h2 className="mt-8 text-lg font-medium">Captured ({evidence.length})</h2>
       <ul className="mt-3 space-y-2">
