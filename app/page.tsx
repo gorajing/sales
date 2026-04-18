@@ -1,10 +1,11 @@
 import Link from 'next/link';
 import { db, schema } from '@/db';
+import { desc } from 'drizzle-orm';
 
 export const dynamic = 'force-dynamic';
 
 export default function Home() {
-  const accounts = db.select().from(schema.accounts).all();
+  const accounts = db.select().from(schema.accounts).orderBy(desc(schema.accounts.createdAt)).all();
   return (
     <main>
       <div className="flex items-center justify-between">

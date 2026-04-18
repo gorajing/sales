@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { db, schema } from '@/db';
 import { newId } from '@/lib/id';
 import { z } from 'zod';
+import { desc } from 'drizzle-orm';
 
 const CreateAccount = z.object({
   name: z.string().min(1),
@@ -12,7 +13,7 @@ const CreateAccount = z.object({
 });
 
 export async function GET() {
-  const rows = db.select().from(schema.accounts).all();
+  const rows = db.select().from(schema.accounts).orderBy(desc(schema.accounts.createdAt)).all();
   return NextResponse.json({ accounts: rows });
 }
 
@@ -24,5 +25,5 @@ export async function POST(req: Request) {
   }
   const id = newId('account');
   db.insert(schema.accounts).values({ id, ...parsed.data }).run();
-  return NextResponse.json({ id });
+  return NextResponse.json({ id }, { status: 201 });
 }

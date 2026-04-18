@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
@@ -24,6 +24,19 @@ vi.mock('@/db', async () => {
   return { db, schema };
 });
 
+beforeEach(async () => {
+  const { db, schema: s } = await import('@/db');
+  db.delete(s.critiques).run();
+  db.delete(s.touchRevisions).run();
+  db.delete(s.touches).run();
+  db.delete(s.sequences).run();
+  db.delete(s.extractionAudits).run();
+  db.delete(s.evidence).run();
+  db.delete(s.callPrepBriefs).run();
+  db.delete(s.contacts).run();
+  db.delete(s.accounts).run();
+});
+
 import { POST, GET } from '../../app/api/accounts/route';
 
 describe('accounts API', () => {
@@ -34,7 +47,7 @@ describe('accounts API', () => {
       body: JSON.stringify({ name: 'Acme', domain: 'acme.com' }),
     });
     const createRes = await POST(createReq);
-    expect(createRes.status).toBe(200);
+    expect(createRes.status).toBe(201);
     const { id } = await createRes.json();
     expect(id).toMatch(/^acc_/);
 

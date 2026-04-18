@@ -7,17 +7,33 @@ export default function NewAccountPage() {
   const [name, setName] = useState('');
   const [domain, setDomain] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
-    const res = await fetch('/api/accounts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, domain: domain || undefined }),
-    });
-    const { id } = await res.json();
-    router.push(`/accounts/${id}`);
+    setError(null);
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, domain: domain || undefined }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const msg = Array.isArray(data.error) && data.error[0]?.message
+          ? data.error[0].message
+          : 'Failed to create account';
+        setError(msg);
+        return;
+      }
+      const { id } = await res.json();
+      router.push(`/accounts/${id}`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -36,9 +52,10 @@ export default function NewAccountPage() {
                  placeholder="acme.com" />
         </label>
         <button disabled={submitting}
-                className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white">
-          Create
+                className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white disabled:opacity-50">
+          {submitting ? 'Creating…' : 'Create'}
         </button>
+        {error && <p className="text-sm text-red-600">{error}</p>}
       </form>
     </main>
   );
