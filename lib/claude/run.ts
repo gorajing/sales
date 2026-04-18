@@ -14,6 +14,7 @@ export interface SpawnClaudeOptions<T> {
 export class ClaudeError extends Error {
   constructor(message: string, public stderr: string, public exitCode: number | null) {
     super(message);
+    this.name = 'ClaudeError';
   }
 }
 
@@ -51,7 +52,9 @@ export async function spawnClaude<T>({
       const child = spawn(bin, args, { cwd, env: process.env });
       let stdout = '';
       let stderr = '';
+      let timedOut = false;
       const timer = setTimeout(() => {
+        timedOut = true;
         child.kill('SIGKILL');
         reject(new ClaudeError('Claude CLI timed out', stderr, null));
       }, timeoutMs);
@@ -64,6 +67,7 @@ export async function spawnClaude<T>({
       });
       child.on('close', (code) => {
         clearTimeout(timer);
+        if (timedOut) return;
         if (code !== 0) {
           if (/rate limit|quota/i.test(stderr)) {
             return reject(new RateLimitError('Rate limit hit', stderr, code));
