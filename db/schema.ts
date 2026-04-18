@@ -46,7 +46,7 @@ export const evidence = sqliteTable('evidence', {
     enum: ['claude_cli', 'manual', 'perplexity_mcp', 'chatgpt_mcp',
            'deep_research_paste'],
   }).notNull(),
-  supersededBy: text('superseded_by'),
+  supersededBy: text('superseded_by').references((): any => evidence.id),
 });
 
 export const sequences = sqliteTable('sequences', {
