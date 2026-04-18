@@ -2,6 +2,7 @@ import { critiqueSkepticalBuyer } from './skeptical-buyer';
 import { critiqueSalesCoach } from './sales-coach';
 import { critiqueWritingEditor } from './writing-editor';
 import { validateRewrite } from './rewrite-safety';
+import { buildSequenceContext } from './sequence-context';
 import { db, schema } from '@/db';
 import { eq } from 'drizzle-orm';
 import { newId } from '../id';
@@ -23,11 +24,12 @@ export async function runCriticPanel(touchRevisionId: string): Promise<CritiqueR
   const body = rev.body;
   const subject = rev.subject;
   const channel = touch.channel;
+  const ctx = await buildSequenceContext(touchRevisionId);
 
   const [skep, coach, editor] = await Promise.all([
-    critiqueSkepticalBuyer(body, subject, channel),
-    critiqueSalesCoach(body, subject, channel),
-    critiqueWritingEditor(body, subject, channel),
+    critiqueSkepticalBuyer(body, subject, channel, ctx),
+    critiqueSalesCoach(body, subject, channel, ctx),
+    critiqueWritingEditor(body, subject, channel, ctx),
   ]);
 
   const rows: CritiqueRow[] = [

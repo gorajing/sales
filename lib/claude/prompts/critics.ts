@@ -4,10 +4,18 @@ const STYLE_RULES_BLOCK = `Style rules (ALWAYS apply):
 - Rewrites must not use em dashes (—). Use a period, comma, or colon.
 - See the Style file for in-voice phrases that should NOT be flagged or rewritten.`;
 
+const SEQUENCE_RULES_BLOCK = `
+Sequence context rules (ALWAYS apply):
+- If the current touch is NOT the first in the sequence, do NOT flag "no why-now hook" or "must lead with specific observation" unless the earlier touches failed to deliver them.
+- If the current touch is a post-connection LinkedIn DM (currentLinkedinKind: dm), treat it as a warm conversation. Do NOT flag "generic opener" or "template opener" — conventions differ from cold DMs. Ask-heavy DMs are appropriate after a connection was accepted.
+- If the current touch is a LinkedIn connection request (currentLinkedinKind: connect), apply cold-open conventions but cap at ~60 words.
+- Do NOT re-flag issues already fixed by earlier touches (e.g. "no specificity" when touch 1 already cited specific evidence).`;
+
 export const SKEPTICAL_BUYER_PROMPT = `You are the recipient of a cold outbound message.
 Your job: would you delete this in under 2 seconds? Why?
 
 ${STYLE_RULES_BLOCK}
+${SEQUENCE_RULES_BLOCK}
 
 Flag:
 - Generic compliments or vague value props
@@ -35,6 +43,7 @@ Return JSON only (no prose, no code fences):
 export const WRITING_EDITOR_PROMPT = `You are a tight-prose editor.
 
 ${STYLE_RULES_BLOCK}
+${SEQUENCE_RULES_BLOCK}
 
 Flag any of:
 - AI-tell phrases: "I hope this finds you well", "I came across", "I noticed", "just wanted to reach out", "circle back", "touch base", "per my last email"
@@ -52,6 +61,7 @@ Return JSON only (same shape as above).`;
 export const SALES_COACH_PROMPT = `You are the Sales Coach critic.
 
 ${STYLE_RULES_BLOCK}
+${SEQUENCE_RULES_BLOCK}
 
 For every principle in the Principles file,
 check the draft against it. For each failing principle, include a finding with:

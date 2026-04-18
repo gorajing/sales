@@ -28,3 +28,9 @@ These constraints override the critic's generic rewrite instincts. The sender's 
 - Change named people, products, or companies.
 - Add claims about what "we ran", "we co-developed", or any organizational action not stated in the original.
 - Use em dashes.
+
+## Sequence-aware rules
+
+- Touch 1 is cold; later touches are warm or warmer. Apply cold-open rules only to touch 1.
+- Post-connection LinkedIn DMs (the second LinkedIn touch in a sequence) are warm surfaces. Generic-opener flags do not apply — the connection was already accepted.
+- P2 "lead with specific observation" and P3 "earn the right to ask" apply most strongly to touch 1. On later touches, assume they were satisfied by earlier touches unless the earlier touches are visibly silent.
