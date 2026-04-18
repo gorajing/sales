@@ -104,3 +104,16 @@ export const ParsedDeliverable = z.object({
   accounts: z.array(ParsedAccount).min(1),
 });
 export type ParsedDeliverable = z.infer<typeof ParsedDeliverable>;
+
+export const AccountHeaderMarker = z.object({
+  rank: z.number().int().min(1),
+  heading: z.string().min(1),
+});
+export type AccountHeaderMarker = z.infer<typeof AccountHeaderMarker>;
+
+export const DeliverableStructure = z.object({
+  name: z.string().min(1),
+  account_headers: z.array(AccountHeaderMarker),  // no min — allow []
+  outro_start_heading: z.string().nullable().default(null),
+});
+export type DeliverableStructure = z.infer<typeof DeliverableStructure>;

@@ -34,28 +34,83 @@ import { parseDeliverableMarkdown } from '../../lib/deliverable/parse';
 import { importParsedDeliverable } from '../../lib/deliverable/import';
 
 describe('parseDeliverableMarkdown', () => {
-  it('invokes Claude with the provided markdown and returns parsed structure', async () => {
-    const fakeParse = vi.fn().mockResolvedValue({
-      name: 'Q2 Targets',
-      intro_md: 'Context paragraph.',
-      outro_md: 'Sources and methodology.',
-      accounts: [
-        {
-          name: 'Acme Corp', domain: 'acme.com', location: 'US', rank: 1,
-          trigger_summary: 'Funding round', deal_shape: 'Standard', routing: 'Elsa, PT', time_ask: '30 min',
-          why_now_md: 'Acme just raised.',
-          contacts: [{ full_name: 'Jane Doe', title: 'VP Data', role: 'primary', archetype: 'leader' }],
-          touches: [
-            { position: 1, channel: 'email', subject: 'Your recent funding', body: 'Hi Jane, congrats.' },
-            { position: 2, channel: 'linkedin', subject: null, body: 'Connect request text.' },
+  it('calls structure pass then per-account passes and assembles correctly', async () => {
+    const raw = `# Q2 Targets\n\nIntro text.\n\nTarget 1. Acme\n\nSome content.\n\nTarget 2. Beta\n\nMore.\n\nNotes on methodology\n\nEnd.`;
+
+    const fakeSpawn = vi.fn().mockImplementation(async ({ prompt, schema }) => {
+      if (prompt.includes('parse-deliverable-structure')) {
+        return {
+          name: 'Q2 Targets',
+          account_headers: [
+            { rank: 1, heading: 'Target 1. Acme' },
+            { rank: 2, heading: 'Target 2. Beta' },
           ],
-        },
-      ],
+          outro_start_heading: 'Notes on methodology',
+        };
+      }
+      if (prompt.includes("rank is 1")) {
+        return {
+          name: 'Acme', domain: null, location: null, rank: 1,
+          trigger_summary: null, deal_shape: null, routing: null, time_ask: null,
+          why_now_md: null, contacts: [],
+          touches: [{ position: 1, channel: 'email', subject: 'Hi', body: 'Body' }],
+        };
+      }
+      if (prompt.includes("rank is 2")) {
+        return {
+          name: 'Beta', domain: null, location: null, rank: 2,
+          trigger_summary: null, deal_shape: null, routing: null, time_ask: null,
+          why_now_md: null, contacts: [],
+          touches: [{ position: 1, channel: 'email', subject: 'Hey', body: 'Text' }],
+        };
+      }
+      throw new Error(`Unexpected prompt: ${prompt.slice(0, 80)}`);
     });
-    const result = await parseDeliverableMarkdown('# Q2 Targets\n\n...', fakeParse as any);
+
+    const result = await parseDeliverableMarkdown(raw, fakeSpawn as any);
+
     expect(result.name).toBe('Q2 Targets');
-    expect(result.accounts).toHaveLength(1);
-    expect(result.accounts[0].touches).toHaveLength(2);
+    expect(result.accounts).toHaveLength(2);
+    expect(result.accounts[0].name).toBe('Acme');
+    expect(result.accounts[1].name).toBe('Beta');
+    // Intro should be the text before "Target 1."
+    expect(result.intro_md).toContain('Intro text');
+    // Outro should start at "Notes on methodology"
+    expect(result.outro_md).toMatch(/^Notes on methodology/);
+
+    // Structure call + 2 account calls = 3 total
+    expect(fakeSpawn).toHaveBeenCalledTimes(3);
+  });
+
+  it('throws if account header not found verbatim', async () => {
+    const raw = `# Doc\n\nTarget 1. Acme\n\nBody.`;
+    const fakeSpawn = vi.fn().mockImplementation(async ({ prompt }) => {
+      if (prompt.includes('parse-deliverable-structure')) {
+        return {
+          name: 'Doc',
+          account_headers: [{ rank: 1, heading: 'Target 9. NotInDoc' }],
+          outro_start_heading: null,
+        };
+      }
+      throw new Error('should not reach');
+    });
+    await expect(parseDeliverableMarkdown(raw, fakeSpawn as any))
+      .rejects.toThrow(/not found verbatim/);
+  });
+
+  it('throws if zero account headers returned', async () => {
+    const raw = `# Doc\n\nNo accounts here.`;
+    const fakeSpawn = vi.fn().mockImplementation(async ({ prompt, schema }) => {
+      if (prompt.includes('parse-deliverable-structure')) {
+        // The DI'd fake bypasses Zod; the length === 0 check in parseDeliverableMarkdown fires.
+        return {
+          name: 'Doc', account_headers: [], outro_start_heading: null,
+        };
+      }
+      throw new Error('should not reach');
+    });
+    await expect(parseDeliverableMarkdown(raw, fakeSpawn as any))
+      .rejects.toThrow(/no account headers/);
   });
 });
 
