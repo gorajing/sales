@@ -2,9 +2,7 @@ import { db, schema } from '@/db';
 import { eq, inArray } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
-import { TouchDrafter } from './TouchDrafter';
-import { TouchBodyWithHighlights } from '@/components/TouchBodyWithHighlights';
-import { EvidencePill } from '@/components/EvidencePill';
+import { SequenceTouchList, type TouchForList, type EvidenceForPill } from './SequenceTouchList';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,39 +21,28 @@ export default async function SequencePage({ params }: {
   const evidence = evidenceIds.length
     ? db.select().from(schema.evidence).where(inArray(schema.evidence.id, evidenceIds)).all()
     : [];
-  const byId = new Map(evidence.map((e) => [e.id, e]));
+  const evidenceById: Record<string, EvidenceForPill> = Object.fromEntries(
+    evidence.map((e) => [e.id, { id: e.id, extractedFact: e.extractedFact, sourceUrl: e.sourceUrl }])
+  );
+
+  const touchesForList: TouchForList[] = touches.map((t) => {
+    const rev = revisions.find((r) => r.id === t.currentRevisionId);
+    return {
+      id: t.id, position: t.position, channel: t.channel as 'email' | 'linkedin',
+      currentRevisionId: t.currentRevisionId,
+      revision: rev ? {
+        id: rev.id, subject: rev.subject, body: rev.body,
+        supportingSpans: rev.supportingSpans,
+        citedEvidenceIds: rev.citedEvidenceIds,
+      } : null,
+    };
+  });
 
   return (
     <main>
       <Link href={`/accounts/${accountId}/sequences`} className="text-sm text-neutral-500">← Sequences</Link>
       <h1 className="mt-2 text-2xl font-semibold">Sequence {sid.slice(0, 11)}</h1>
-      <ol className="mt-6 space-y-6">
-        {touches.map((t) => {
-          const rev = revisions.find((r) => r.id === t.currentRevisionId);
-          return (
-            <li key={t.id} className="rounded border border-neutral-200 bg-white p-4">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-neutral-500">#{t.position} · {t.channel}</span>
-                <TouchDrafter touchId={t.id} hasDraft={!!rev} />
-              </div>
-              {rev ? (
-                <div className="mt-3">
-                  {rev.subject && <div className="font-medium">{rev.subject}</div>}
-                  <TouchBodyWithHighlights body={rev.body} spans={rev.supportingSpans} />
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {rev.citedEvidenceIds.map((eid) => {
-                      const e = byId.get(eid);
-                      return e ? <EvidencePill key={eid} id={eid} fact={e.extractedFact} sourceUrl={e.sourceUrl} /> : null;
-                    })}
-                  </div>
-                </div>
-              ) : (
-                <p className="mt-3 text-sm text-neutral-500 italic">No draft yet.</p>
-              )}
-            </li>
-          );
-        })}
-      </ol>
+      <SequenceTouchList touches={touchesForList} evidenceById={evidenceById} />
     </main>
   );
 }
