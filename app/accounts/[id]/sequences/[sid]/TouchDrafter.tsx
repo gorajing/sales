@@ -34,7 +34,14 @@ export function TouchDrafter({ touchId, hasDraft }: { touchId: string; hasDraft:
   return (
     <div className="flex items-center gap-2">
       {issues.length > 0 && (
-        <span className="text-xs text-amber-700">{issues.length} validation issues</span>
+        <details className="text-xs">
+          <summary className="cursor-pointer text-amber-700">
+            {issues.length} validation issue{issues.length === 1 ? '' : 's'}
+          </summary>
+          <ul className="mt-1 ml-4 list-disc space-y-0.5 text-amber-800">
+            {issues.map((iss, i) => <li key={i}>{iss}</li>)}
+          </ul>
+        </details>
       )}
       {error && <span className="text-xs text-red-600">{error}</span>}
       <button disabled={busy} onClick={draft}

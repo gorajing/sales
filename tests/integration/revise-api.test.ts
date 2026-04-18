@@ -97,6 +97,28 @@ describe('touches/revise API', () => {
     expect(res.status).toBe(400);
   });
 
+  it('replaces ALL occurrences of oldText when it appears multiple times', async () => {
+    const { db, schema: s } = await import('@/db');
+    db.update(s.touchRevisions).set({
+      body: 'Click to touch base. I want to touch base today.',
+    }).where(eq(s.touchRevisions.id, 'tr_1')).run();
+
+    const req = new Request('http://x/api/touches/revise', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        touchId: 'to_1',
+        oldText: 'touch base',
+        newText: 'chat',
+      }),
+    });
+    await POST(req);
+    const revs = db.select().from(s.touchRevisions).all()
+      .sort((a, b) => a.revisionNumber - b.revisionNumber);
+    expect(revs[1].body).toBe('Click to chat. I want to chat today.');
+    expect(revs[1].body).not.toContain('touch base');
+  });
+
   it('preserves cited_evidence_ids and supporting_spans across revisions', async () => {
     const { db, schema: s } = await import('@/db');
     // Update tr_1 to have some cited evidence

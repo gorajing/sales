@@ -25,7 +25,7 @@ export async function POST(req: Request) {
     .where(eq(schema.touchRevisions.id, touch.currentRevisionId)).get();
   if (!current) return NextResponse.json({ error: 'revision missing' }, { status: 500 });
 
-  const newBody = current.body.replace(parsed.data.oldText, parsed.data.newText);
+  const newBody = current.body.replaceAll(parsed.data.oldText, parsed.data.newText);
   if (newBody === current.body) {
     return NextResponse.json({ error: 'oldText not found in body' }, { status: 400 });
   }

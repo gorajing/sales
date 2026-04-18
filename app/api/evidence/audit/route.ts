@@ -38,6 +38,14 @@ export async function POST(req: Request) {
   } else if (action === 'override_verified') {
     db.update(schema.evidence).set({ extractionStatus: 'verified' })
       .where(eq(schema.evidence.id, evidenceId)).run();
+    // Mark latest audit as user-overridden
+    const latest = db.select().from(schema.extractionAudits)
+      .where(eq(schema.extractionAudits.evidenceId, evidenceId))
+      .orderBy(desc(schema.extractionAudits.createdAt)).all()[0];
+    if (latest) {
+      db.update(schema.extractionAudits).set({ resolvedBy: 'user_overrode' })
+        .where(eq(schema.extractionAudits.id, latest.id)).run();
+    }
   } else if (action === 'accept_correction') {
     const audit = db.select().from(schema.extractionAudits)
       .where(eq(schema.extractionAudits.evidenceId, evidenceId))
@@ -47,6 +55,9 @@ export async function POST(req: Request) {
       db.update(schema.evidence)
         .set({ extractedFact: audit.suggestedCorrection, extractionStatus: 'verified' })
         .where(eq(schema.evidence.id, evidenceId)).run();
+      // Mark this audit as user-accepted
+      db.update(schema.extractionAudits).set({ resolvedBy: 'user_accepted' })
+        .where(eq(schema.extractionAudits.id, audit.id)).run();
     }
   }
   return NextResponse.json({ ok: true });

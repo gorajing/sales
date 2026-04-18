@@ -121,6 +121,56 @@ describe('draftTouch', () => {
     expect(nums).toEqual([1, 2]);
   });
 
+  it('flips pending evidence to verified via audit, then includes it in the next draft', async () => {
+    const { auditOne } = await import('../../lib/evidence/audit');
+    const { db, schema: s } = await import('@/db');
+
+    // Seed with pending evidence only (acc_1 already exists from beforeEach)
+    db.insert(s.evidence).values({
+      id: 'ev_pending', accountId: 'acc_1', sourceUrl: 'https://x',
+      sourceType: 'website', snippet: 'Acme shipped a new product in Q2.',
+      extractedFact: 'Acme shipped a product in Q2.',
+      capturedBy: 'manual', extractionStatus: 'pending_audit',
+    }).run();
+    db.insert(s.sequences).values({ id: 'sq_2', accountId: 'acc_1' }).run();
+    db.insert(s.touches).values({
+      id: 'to_2', sequenceId: 'sq_2', position: 1, channel: 'email',
+    }).run();
+
+    // First draft attempt: pending evidence must NOT appear in the prompt
+    const firstFake = vi.fn().mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).not.toContain('ev_pending');
+      return {
+        subject: 's', body: 'b', channel: 'email',
+        cited_evidence_ids: [], supporting_spans: [], rationale: 'r',
+      };
+    });
+    await draftTouch({ touchId: 'to_2' }, firstFake as any);
+
+    // Audit flips to verified
+    const auditFake = vi.fn().mockResolvedValue({
+      evidence_id: 'ev_pending', verdict: 'verified',
+      reason: 'Fact is supported.', suggested_correction: null,
+    });
+    await auditOne('ev_pending', auditFake as any);
+
+    const evRow = db.select().from(s.evidence).all().find(e => e.id === 'ev_pending');
+    expect(evRow?.extractionStatus).toBe('verified');
+
+    // Second draft: verified evidence NOW appears in the prompt
+    const secondFake = vi.fn().mockImplementation(async ({ prompt }: { prompt: string }) => {
+      expect(prompt).toContain('ev_pending');
+      return {
+        subject: 's', body: 'b', channel: 'email',
+        cited_evidence_ids: ['ev_pending'],
+        supporting_spans: [{ evidence_id: 'ev_pending', span: 'shipped a new product', claim: 'b' }],
+        rationale: 'r',
+      };
+    });
+    const result = await draftTouch({ touchId: 'to_2' }, secondFake as any);
+    expect(result.issues).toHaveLength(0);
+  });
+
   it('only uses verified evidence', async () => {
     const { db, schema: s } = await import('@/db');
     db.insert(s.evidence).values({
