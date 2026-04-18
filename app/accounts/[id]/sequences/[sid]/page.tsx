@@ -3,6 +3,7 @@ import { eq, inArray } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
 import { SequenceTouchList, type TouchForList, type EvidenceForPill } from './SequenceTouchList';
+import { ExportButton } from './ExportButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,7 +42,10 @@ export default async function SequencePage({ params }: {
   return (
     <main>
       <Link href={`/accounts/${accountId}/sequences`} className="text-sm text-neutral-500">← Sequences</Link>
-      <h1 className="mt-2 text-2xl font-semibold">Sequence {sid.slice(0, 11)}</h1>
+      <div className="mt-2 flex items-center justify-between">
+        <h1 className="text-2xl font-semibold">Sequence {sid.slice(0, 11)}</h1>
+        <ExportButton sequenceId={sid} />
+      </div>
       <SequenceTouchList touches={touchesForList} evidenceById={evidenceById} />
     </main>
   );
