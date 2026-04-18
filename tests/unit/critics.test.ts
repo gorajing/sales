@@ -59,6 +59,9 @@ beforeEach(async () => {
 
 import { eq } from 'drizzle-orm';
 import { runCriticPanel } from '../../lib/critics/run-panel';
+import { critiqueSkepticalBuyer } from '../../lib/critics/skeptical-buyer';
+import { critiqueSalesCoach } from '../../lib/critics/sales-coach';
+import { critiqueWritingEditor } from '../../lib/critics/writing-editor';
 
 describe('runCriticPanel', () => {
   it('runs all 3 critics and persists critique rows', async () => {
@@ -73,5 +76,24 @@ describe('runCriticPanel', () => {
     const salesCoach = persisted.find((c) => c.criticName === 'sales_coach');
     expect(salesCoach?.verdict).toBe('revise');
     expect(Array.isArray(salesCoach?.findingsJson)).toBe(true);
+  });
+
+  it('nulls out suggested_rewrite that introduces a new title, appends reason to issue', async () => {
+    vi.mocked(critiqueSkepticalBuyer).mockResolvedValueOnce({
+      verdict: 'revise',
+      findings: [{
+        issue: 'Sender signature lacks title',
+        quote: 'Jin Choi, HelloBiome',
+        suggested_rewrite: 'Jin Choi, Head of Business Development, HelloBiome',
+        principle_id: null,
+      }],
+    });
+    vi.mocked(critiqueSalesCoach).mockResolvedValueOnce({ verdict: 'pass', findings: [] });
+    vi.mocked(critiqueWritingEditor).mockResolvedValueOnce({ verdict: 'pass', findings: [] });
+
+    const rows = await runCriticPanel('tr_1');
+    const skep = rows.find((r) => r.criticName === 'skeptical_buyer');
+    expect(skep?.result.findings[0].suggested_rewrite).toBeNull();
+    expect(skep?.result.findings[0].issue).toMatch(/auto-rejected/);
   });
 });

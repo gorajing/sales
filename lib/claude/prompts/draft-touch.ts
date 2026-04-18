@@ -13,3 +13,8 @@ export function loadIcp(): string {
   const p = path.resolve(process.cwd(), 'data/icp.md');
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '(No ICP brief yet.)';
 }
+
+export function loadStyle(): string {
+  const p = path.resolve(process.cwd(), 'data/style.md');
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '(No style rules defined.)';
+}

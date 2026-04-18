@@ -1,6 +1,6 @@
 import { spawnClaude as realSpawn } from '../claude/run';
 import { renderPrompt } from '../claude/prompts';
-import { loadPrinciples } from '../claude/prompts/draft-touch';
+import { loadPrinciples, loadStyle } from '../claude/prompts/draft-touch';
 import { SALES_COACH_PROMPT } from '../claude/prompts/critics';
 import { CriticResult } from '../claude/types';
 import fs from 'node:fs';
@@ -17,6 +17,7 @@ export async function critiqueSalesCoach(
   const prompt = renderPrompt([
     { heading: 'Skill', body: fs.readFileSync(skillPath, 'utf8') },
     { heading: 'Persona', body: SALES_COACH_PROMPT },
+    { heading: 'Style', body: loadStyle() },
     { heading: 'Principles', body: loadPrinciples() },
     { heading: 'Draft', body: JSON.stringify({ channel, subject, body }, null, 2) },
   ]);

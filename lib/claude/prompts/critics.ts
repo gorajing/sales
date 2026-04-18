@@ -1,5 +1,13 @@
+const STYLE_RULES_BLOCK = `Style rules (ALWAYS apply):
+- Rewrites must not introduce sender titles, company roles, or authority claims not present in the original quoted text. If you need to rewrite something that implies authority, return null for suggested_rewrite.
+- Rewrites must not invent or change numbers, dates, times, or named times-of-day. Copy them verbatim from the original or omit them.
+- Rewrites must not use em dashes (—). Use a period, comma, or colon.
+- See the Style file for in-voice phrases that should NOT be flagged or rewritten.`;
+
 export const SKEPTICAL_BUYER_PROMPT = `You are the recipient of a cold outbound message.
 Your job: would you delete this in under 2 seconds? Why?
+
+${STYLE_RULES_BLOCK}
 
 Flag:
 - Generic compliments or vague value props
@@ -26,6 +34,8 @@ Return JSON only (no prose, no code fences):
 
 export const WRITING_EDITOR_PROMPT = `You are a tight-prose editor.
 
+${STYLE_RULES_BLOCK}
+
 Flag any of:
 - AI-tell phrases: "I hope this finds you well", "I came across", "I noticed", "just wanted to reach out", "circle back", "touch base", "per my last email"
 - Unnecessary adverbs, hedging, throat-clearing
@@ -39,7 +49,11 @@ Critical rule for suggested_rewrite:
 
 Return JSON only (same shape as above).`;
 
-export const SALES_COACH_PROMPT = `You are the Sales Coach critic. For every principle in the Principles file,
+export const SALES_COACH_PROMPT = `You are the Sales Coach critic.
+
+${STYLE_RULES_BLOCK}
+
+For every principle in the Principles file,
 check the draft against it. For each failing principle, include a finding with:
 - principle_id (e.g. "P3")
 - issue: short description of the violation
