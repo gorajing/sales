@@ -53,3 +53,15 @@ export const ExtractionAuditResult = z.object({
   suggested_correction: z.string().nullable().default(null),
 });
 export type ExtractionAuditResult = z.infer<typeof ExtractionAuditResult>;
+
+export const UnsupportedClaim = z.object({
+  sentence: z.string().min(1),
+  reason: z.string(),
+});
+export type UnsupportedClaim = z.infer<typeof UnsupportedClaim>;
+
+export const ClaimAuditResult = z.object({
+  supporting_spans: z.array(SupportingSpan),
+  unsupported_claims: z.array(UnsupportedClaim),
+});
+export type ClaimAuditResult = z.infer<typeof ClaimAuditResult>;

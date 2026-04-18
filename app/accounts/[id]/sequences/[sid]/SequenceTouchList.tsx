@@ -4,6 +4,8 @@ import { CriticPanel } from '@/components/CriticPanel';
 import { TouchBodyWithHighlights } from '@/components/TouchBodyWithHighlights';
 import { EvidencePill } from '@/components/EvidencePill';
 import { TouchDrafter } from './TouchDrafter';
+import { ImportTouchForm } from './ImportTouchForm';
+import { ClaimAuditButton } from './ClaimAuditButton';
 
 export interface TouchForList {
   id: string;
@@ -56,13 +58,17 @@ export function SequenceTouchList({
                   return e ? <EvidencePill key={eid} id={eid} fact={e.extractedFact} sourceUrl={e.sourceUrl} /> : null;
                 })}
               </div>
+              <ClaimAuditButton touchId={t.id} />
               <CriticPanel
                 touchRevisionId={t.revision.id}
                 onAcceptRewrite={(oldText, newText) => onAcceptRewrite(t.id, oldText, newText)}
               />
             </div>
           ) : (
-            <p className="mt-3 text-sm text-neutral-500 italic">No draft yet.</p>
+            <div className="mt-3">
+              <p className="text-sm text-neutral-500 italic">No draft yet — generate one with Draft, or paste one below.</p>
+              <ImportTouchForm touchId={t.id} channel={t.channel} />
+            </div>
           )}
         </li>
       ))}
