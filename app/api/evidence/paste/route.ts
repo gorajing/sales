@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { extractFromPaste } from '@/lib/evidence/extract';
+import { RateLimitError } from '@/lib/claude/run';
 
 const PasteBody = z.object({
   accountId: z.string(),
@@ -21,6 +22,9 @@ export async function POST(req: Request) {
     const ids = await extractFromPaste(parsed.data);
     return NextResponse.json({ evidenceIds: ids }, { status: 201 });
   } catch (err) {
+    if (err instanceof RateLimitError) {
+      return NextResponse.json({ error: 'Rate limit hit — try again later' }, { status: 429 });
+    }
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }
 }
