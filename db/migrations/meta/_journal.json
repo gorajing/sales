@@ -15,6 +15,13 @@
       "when": 1776492126855,
       "tag": "0001_yummy_dragon_man",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1776498439070,
+      "tag": "0002_deliverables",
+      "breakpoints": true
     }
   ]
 }

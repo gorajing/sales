@@ -4,6 +4,7 @@ const PREFIX = {
   account: 'acc', contact: 'ct', evidence: 'ev',
   sequence: 'sq', touch: 'to', touchRevision: 'tr',
   critique: 'cr', extractionAudit: 'ea', callPrepBrief: 'cp',
+  deliverable: 'del', deliverableAccount: 'da',
 } as const;
 
 export type IdKind = keyof typeof PREFIX;

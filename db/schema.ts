@@ -129,3 +129,26 @@ export const callPrepBriefs = sqliteTable('call_prep_briefs', {
     .notNull().default(sql`'[]'`),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const deliverables = sqliteTable('deliverables', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  introMd: text('intro_md'),
+  outroMd: text('outro_md'),
+  rawMd: text('raw_md'),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
+export const deliverableAccounts = sqliteTable('deliverable_accounts', {
+  id: text('id').primaryKey(),
+  deliverableId: text('deliverable_id').notNull().references(() => deliverables.id),
+  accountId: text('account_id').notNull().references(() => accounts.id),
+  rank: integer('rank').notNull(),
+  whyNowMd: text('why_now_md'),
+  dealShape: text('deal_shape'),
+  routing: text('routing'),
+  timeAsk: text('time_ask'),
+  triggerSummary: text('trigger_summary'),
+  sequenceId: text('sequence_id'),
+  createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+});

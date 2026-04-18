@@ -65,3 +65,42 @@ export const ClaimAuditResult = z.object({
   unsupported_claims: z.array(UnsupportedClaim),
 });
 export type ClaimAuditResult = z.infer<typeof ClaimAuditResult>;
+
+export const ParsedTouch = z.object({
+  position: z.number().int().min(1),
+  channel: z.enum(['email', 'linkedin']),
+  subject: z.string().nullable().default(null),
+  body: z.string().min(1),
+});
+export type ParsedTouch = z.infer<typeof ParsedTouch>;
+
+export const ParsedContact = z.object({
+  full_name: z.string().min(1),
+  title: z.string().nullable().default(null),
+  archetype: z.enum(['gatekeeper', 'business_user', 'enabler', 'leader', 'unknown']).default('unknown'),
+  role: z.enum(['primary', 'secondary', 'tertiary', 'executive_sponsor']).default('primary'),
+});
+export type ParsedContact = z.infer<typeof ParsedContact>;
+
+export const ParsedAccount = z.object({
+  name: z.string().min(1),
+  domain: z.string().nullable().default(null),
+  location: z.string().nullable().default(null),
+  rank: z.number().int().min(1),
+  trigger_summary: z.string().nullable().default(null),
+  deal_shape: z.string().nullable().default(null),
+  routing: z.string().nullable().default(null),
+  time_ask: z.string().nullable().default(null),
+  why_now_md: z.string().nullable().default(null),
+  contacts: z.array(ParsedContact),
+  touches: z.array(ParsedTouch),
+});
+export type ParsedAccount = z.infer<typeof ParsedAccount>;
+
+export const ParsedDeliverable = z.object({
+  name: z.string().min(1),
+  intro_md: z.string().nullable().default(null),
+  outro_md: z.string().nullable().default(null),
+  accounts: z.array(ParsedAccount).min(1),
+});
+export type ParsedDeliverable = z.infer<typeof ParsedDeliverable>;

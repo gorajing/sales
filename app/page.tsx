@@ -8,6 +8,10 @@ export default function Home() {
   const accounts = db.select().from(schema.accounts).orderBy(desc(schema.accounts.createdAt)).all();
   return (
     <main>
+      <nav className="mb-6 flex gap-4 text-sm text-neutral-600">
+        <Link href="/" className="font-medium">Accounts</Link>
+        <Link href="/deliverables" className="hover:underline">Deliverables</Link>
+      </nav>
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">Accounts</h1>
         <Link href="/accounts/new" className="rounded bg-neutral-900 px-3 py-1.5 text-sm text-white">
