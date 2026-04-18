@@ -82,6 +82,45 @@ describe('draftTouch', () => {
     expect(issues.length).toBeGreaterThan(0);
   });
 
+  it('retry succeeds when second attempt has valid spans', async () => {
+    const fakeSpawn = vi.fn()
+      .mockResolvedValueOnce({
+        subject: 'x', body: 'y', channel: 'email',
+        cited_evidence_ids: ['ev_1'],
+        supporting_spans: [{ evidence_id: 'ev_1', span: 'NOT IN SNIPPET', claim: 'y' }],
+        rationale: 'bad',
+      })
+      .mockResolvedValueOnce({
+        subject: 'x', body: 'y', channel: 'email',
+        cited_evidence_ids: ['ev_1'],
+        supporting_spans: [{ evidence_id: 'ev_1', span: 'hiring a VP of Data', claim: 'y' }],
+        rationale: 'corrected',
+      });
+    const { revisionId, issues } = await draftTouch({ touchId: 'to_1' }, fakeSpawn as any);
+    expect(fakeSpawn).toHaveBeenCalledTimes(2);
+    expect(issues).toHaveLength(0);  // second attempt passes validation
+    const { db, schema: s } = await import('@/db');
+    const rev = db.select().from(s.touchRevisions).all().find((r) => r.id === revisionId);
+    expect(rev?.rationale).toBe('corrected');
+  });
+
+  it('increments revisionNumber when drafted twice on the same touch', async () => {
+    const ok = {
+      subject: 'x', body: 'y', channel: 'email' as const,
+      cited_evidence_ids: ['ev_1'],
+      supporting_spans: [{ evidence_id: 'ev_1', span: 'hiring a VP of Data', claim: 'y' }],
+      rationale: 'r',
+    };
+    const fakeSpawn = vi.fn().mockResolvedValue(ok);
+    await draftTouch({ touchId: 'to_1' }, fakeSpawn as any);
+    await draftTouch({ touchId: 'to_1' }, fakeSpawn as any);
+    const { db, schema: s } = await import('@/db');
+    const revs = db.select().from(s.touchRevisions).all();
+    expect(revs).toHaveLength(2);
+    const nums = revs.map((r) => r.revisionNumber).sort();
+    expect(nums).toEqual([1, 2]);
+  });
+
   it('only uses verified evidence', async () => {
     const { db, schema: s } = await import('@/db');
     db.insert(s.evidence).values({

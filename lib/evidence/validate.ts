@@ -39,5 +39,14 @@ export function validateDraft(
       });
     }
   }
+  // Structural guard: if the draft cites any evidence, it MUST provide at least one supporting span.
+  // This closes a bypass where the drafter could list cited_evidence_ids but omit spans, making
+  // the substring check vacuous.
+  if (draft.cited_evidence_ids.length > 0 && draft.supporting_spans.length === 0) {
+    issues.push({
+      kind: 'missing_evidence',
+      detail: 'cited_evidence_ids is non-empty but supporting_spans is empty; every cited claim must have a supporting_span',
+    });
+  }
   return issues;
 }

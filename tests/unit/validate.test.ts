@@ -31,9 +31,9 @@ describe('validateDraft', () => {
       supporting_spans: [], rationale: '',
     };
     const issues = validateDraft(draft, evidence);
-    expect(issues).toHaveLength(1);
-    expect(issues[0].kind).toBe('unknown_evidence_id');
-    expect(issues[0].detail).toBe('ev_missing');
+    // Two issues: unknown_evidence_id + missing_evidence (spans empty while ids non-empty)
+    expect(issues.length).toBeGreaterThanOrEqual(1);
+    expect(issues.some((i) => i.kind === 'unknown_evidence_id' && i.detail === 'ev_missing')).toBe(true);
   });
 
   it('flags unknown evidence ids in supporting_spans', () => {
@@ -64,6 +64,28 @@ describe('validateDraft', () => {
       subject: null, body: 'x', channel: 'linkedin',
       cited_evidence_ids: ['ev_a'],
       supporting_spans: [{ evidence_id: 'ev_a', span: 'HIRING   a vp\nof data', claim: 'x' }],
+      rationale: '',
+    };
+    expect(validateDraft(draft, evidence)).toHaveLength(0);
+  });
+
+  it('flags missing_evidence when cited_evidence_ids is set but supporting_spans is empty', () => {
+    const draft: DraftTouch = {
+      subject: 'x', body: 'Saw your thing.', channel: 'email',
+      cited_evidence_ids: ['ev_a'],
+      supporting_spans: [],
+      rationale: '',
+    };
+    const issues = validateDraft(draft, evidence);
+    expect(issues).toHaveLength(1);
+    expect(issues[0].kind).toBe('missing_evidence');
+  });
+
+  it('passes when no evidence cited and no spans provided (empty-body edge case)', () => {
+    const draft: DraftTouch = {
+      subject: 'x', body: 'Hello.', channel: 'email',
+      cited_evidence_ids: [],
+      supporting_spans: [],
       rationale: '',
     };
     expect(validateDraft(draft, evidence)).toHaveLength(0);

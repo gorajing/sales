@@ -36,9 +36,6 @@ export async function draftTouch(
     .filter((t) => t.position < touch.position)
     .sort((a, b) => a.position - b.position);
 
-  type TouchRevisionRow = NonNullable<
-    ReturnType<typeof db.select extends () => infer R ? R : never>
-  >;
   const priorRevisionsMaybeNull = priorTouches.map((t) =>
     t.currentRevisionId
       ? db.select().from(schema.touchRevisions)
@@ -54,13 +51,17 @@ export async function draftTouch(
     snippet: e.snippet, extracted_fact: e.extractedFact,
   }));
 
+  const allTouchesInSequence = db.select().from(schema.touches)
+    .where(eq(schema.touches.sequenceId, touch.sequenceId)).all();
+  const totalTouches = allTouchesInSequence.length;
+
   async function runDrafter(extraCorrection?: string): Promise<DraftTouch> {
     const prompt = renderPrompt([
       { heading: 'Skill', body: loadDraftTouchSkill() },
       { heading: 'ICP brief', body: loadIcp() },
       { heading: 'Principles', body: loadPrinciples() },
       { heading: 'Account evidence pack', body: JSON.stringify(evidencePack, null, 2) },
-      { heading: 'Position', body: `Touch ${touch!.position} of this sequence. Channel: ${touch!.channel}.` },
+      { heading: 'Position', body: `Touch ${touch!.position} of ${totalTouches}. Channel: ${touch!.channel}.` },
       { heading: 'Prior touches', body: JSON.stringify(priorRevisions.map((r) => ({
           subject: r.subject, body: r.body,
         })), null, 2),
