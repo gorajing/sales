@@ -98,7 +98,7 @@ export const critiques = sqliteTable('critiques', {
   verdict: text('verdict', { enum: ['pass', 'revise', 'reject'] }).notNull(),
   findingsJson: text('findings_json', { mode: 'json' })
     .$type<Array<{
-      issue: string; quote: string; suggested_rewrite: string;
+      issue: string; quote: string; suggested_rewrite: string | null;
       principle_id: string | null;
     }>>().notNull().default(sql`'[]'`),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),

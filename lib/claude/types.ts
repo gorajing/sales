@@ -35,7 +35,7 @@ export type DraftTouch = z.infer<typeof DraftTouch>;
 export const CriticFinding = z.object({
   issue: z.string(),
   quote: z.string(),
-  suggested_rewrite: z.string(),
+  suggested_rewrite: z.string().nullable().default(null),  // allow null
   principle_id: z.string().nullable().default(null),
 });
 export type CriticFinding = z.infer<typeof CriticFinding>;

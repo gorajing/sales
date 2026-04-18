@@ -37,6 +37,12 @@ export async function auditClaims(
       eq(schema.evidence.extractionStatus, 'verified'),
     )).all();
 
+  if (evidenceRows.length === 0) {
+    // Don't burn a Claude call against an empty pack. Return a "no evidence yet" outcome
+    // that the UI can surface as a user-actionable message, not a fake list of unsupported claims.
+    throw new Error('No verified evidence for this account yet. Add evidence on the Evidence tab and run Extraction Audit first.');
+  }
+
   const evidencePack = evidenceRows.map((e) => ({
     id: e.id, source_url: e.sourceUrl, source_type: e.sourceType,
     snippet: e.snippet, extracted_fact: e.extractedFact,

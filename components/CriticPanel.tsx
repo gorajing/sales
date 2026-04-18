@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 
-type Finding = { issue: string; quote: string; suggested_rewrite: string; principle_id: string | null };
+type Finding = { issue: string; quote: string; suggested_rewrite: string | null; principle_id: string | null };
 type Critique = { criticName: string; result: { verdict: 'pass' | 'revise' | 'reject'; findings: Finding[] } };
 
 export function CriticPanel({
@@ -67,11 +67,17 @@ export function CriticPanel({
                 <li key={i} className="rounded bg-neutral-50 p-2 text-xs">
                   <div className="font-medium">{f.issue}{f.principle_id ? ` (${f.principle_id})` : ''}</div>
                   <blockquote className="mt-1 italic text-neutral-600">&quot;{f.quote}&quot;</blockquote>
-                  <div className="mt-1"><span className="text-neutral-400">→ </span>{f.suggested_rewrite}</div>
-                  <button
-                    className="mt-2 rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px]"
-                    onClick={() => onAcceptRewrite(f.quote, f.suggested_rewrite)}
-                  >Accept rewrite</button>
+                  {f.suggested_rewrite ? (
+                    <>
+                      <div className="mt-1"><span className="text-neutral-400">→ </span>{f.suggested_rewrite}</div>
+                      <button
+                        className="mt-2 rounded border border-neutral-300 bg-white px-2 py-0.5 text-[11px]"
+                        onClick={() => onAcceptRewrite(f.quote, f.suggested_rewrite!)}
+                      >Accept rewrite</button>
+                    </>
+                  ) : (
+                    <div className="mt-1 text-neutral-500 italic">No specific rewrite — consider deleting or restructuring.</div>
+                  )}
                 </li>
               ))}
               {c.result.findings.length === 0 && (

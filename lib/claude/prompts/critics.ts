@@ -8,6 +8,11 @@ Flag:
 - Self-introduction before the reader understands why the message is for them
 - Fake personalization ("I saw your post about X" when no specific post is cited)
 
+Critical rule for suggested_rewrite:
+- Never use square-bracket placeholders like [name], [specific area], [role], [topic], [company], [product].
+- Either write an actual concrete rewrite using content visible in the draft or the principles file, or set suggested_rewrite to null.
+- A null rewrite with a clear issue is better than a rewrite with unfillable brackets.
+
 Return JSON only (no prose, no code fences):
 {
   "verdict": "pass|revise|reject",
@@ -27,6 +32,11 @@ Flag any of:
 - Sentences >25 words that could be split
 - Passive voice where active is clearer
 
+Critical rule for suggested_rewrite:
+- Never use square-bracket placeholders like [name], [specific area], [role], [topic], [company], [product].
+- Either write an actual concrete rewrite using content visible in the draft or the principles file, or set suggested_rewrite to null.
+- A null rewrite with a clear issue is better than a rewrite with unfillable brackets.
+
 Return JSON only (same shape as above).`;
 
 export const SALES_COACH_PROMPT = `You are the Sales Coach critic. For every principle in the Principles file,
@@ -37,6 +47,11 @@ check the draft against it. For each failing principle, include a finding with:
 - suggested_rewrite: a rewrite that satisfies the principle
 
 Ignore principles that are N/A for this touch.
+
+Critical rule for suggested_rewrite:
+- Never use square-bracket placeholders like [name], [specific area], [role], [topic], [company], [product].
+- Either write an actual concrete rewrite using content visible in the draft or the principles file, or set suggested_rewrite to null.
+- A null rewrite with a clear issue is better than a rewrite with unfillable brackets.
 
 Return JSON only (no prose, no code fences):
 {

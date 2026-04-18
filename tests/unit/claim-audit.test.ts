@@ -102,4 +102,15 @@ describe('auditClaims', () => {
       .rejects.toThrow('no current revision');
     expect(fakeSpawn).not.toHaveBeenCalled();
   });
+
+  it('throws a user-actionable error when no verified evidence exists for the account', async () => {
+    const { db, schema: s } = await import('@/db');
+    // Clear all evidence (the beforeEach seeded one verified row — remove it)
+    db.delete(s.evidence).run();
+
+    const fakeSpawn = vi.fn();
+    await expect(auditClaims('to_1', fakeSpawn as any))
+      .rejects.toThrow(/No verified evidence/);
+    expect(fakeSpawn).not.toHaveBeenCalled();
+  });
 });
