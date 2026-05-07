@@ -1,69 +1,58 @@
-# Sales
+# Sales — SDR Automation Reference Architecture
 
-Personal, local-first B2B sales research-and-outreach tool. Every factual claim in every draft traces to a verified evidence row. Drafts are critiqued against a user-owned principles file. Every revision is preserved.
+An evidence-grounded reference architecture for AI-powered SDR automation. Working v1 below.
 
-## Requirements
-- macOS with the `claude` CLI installed and logged into a Claude Max 20 account
-- Node.js 20.9+, pnpm
+Every factual claim in every generated outreach traces to a verified evidence row. Lead scores cite the specific signals that produced them. Routing decisions name the rule that fired. Drafts are critiqued against a user-owned principles file. Every revision is preserved.
 
-## Setup
+Built on Claude Code primitives: each LLM call is a scoped CLI subprocess with `--allowed-tools`, the same pattern Claude Code itself ships.
+
+## Mapped to GTM Engineering primitives
+
+| Primitive | Module | Notes |
+|---|---|---|
+| Lead capture | `lib/signals/ingest.ts`, `app/api/signals/route.ts` | Webhook + connector pull, both produce typed Evidence rows |
+| Centralized prospect data | `db/schema.ts` (`evidence` table) | Append-only, audit-tracked, multi-source |
+| Lead scoring | `lib/scoring/score.ts` | Weighted rules in `data/scoring-rules.md`; rationale cites evidence IDs |
+| Routing | `lib/routing/route.ts` | Predicate DSL in `data/routing-rules.md` |
+| Alerts | `lib/alerts/dispatch.ts` | Tier-transition + spike detection; Slack/email/webhook fanout |
+| Account research | `lib/research/auto-research.ts` | Claude CLI with WebFetch + WebSearch |
+| Personalized outreach | `lib/drafter/draft.ts` + 3 critics | Substring-validator anti-hallucination invariant |
+| Engagement attribution | `lib/engagement/attribute.ts` | Per-principle outcome rates feed back into drafter |
+| External integrations | `lib/connectors/` | One real (GitHub via Octokit), three fixture-backed stubs |
+
+## Architecture decisions
+
+See [docs/architecture.md](docs/architecture.md) for the full essay. Summary:
+
+1. **Evidence is a spine, not a sidecar.** Every signal, fact, and outcome lives in one append-only table with `extractionStatus`, `confidence`, and `supersededBy` columns. Drafts cite Evidence IDs; scores cite Evidence IDs; routing rationales cite Evidence IDs. One ledger; one provenance graph.
+2. **The validator is a structural invariant, not a prompt instruction.** `lib/evidence/validate.ts` rejects any draft whose `supporting_spans` are not verbatim substrings of the cited snippets. The LLM cannot bypass it; the drafter retries with correction once, then surfaces remaining issues to the operator.
+3. **Principles, scoring rules, routing rules, and alert triggers are user-editable Markdown files**, not code. SDR leaders edit `data/*.md`; the critics, scoring engine, routing engine, and alert worker re-read on every run.
+4. **Each LLM call is a scoped Claude CLI subprocess with `--allowed-tools`.** No Anthropic API key required; the CLI authenticates via the operator's existing Claude Max OAuth session. Concurrency is bounded by `CLAUDE_MAX_CONCURRENT` (default 3).
+5. **Drafts are immutable revisions, not mutable rows.** Accepting a critic rewrite creates a new `touch_revisions` row; the prior revision and its critiques are preserved indefinitely.
+
+## Quick start
 
 ```bash
 pnpm install
-pnpm db:generate   # idempotent after first run
+pnpm db:generate
 pnpm db:migrate
 pnpm dev
 ```
 
 Open http://localhost:3000.
 
-## Workflow
+## Demo
 
-1. **Create an account.** Add the target company.
-2. **Gather evidence.**
-   - Paste URLs + raw text into the Evidence tab, OR
-   - Click "Run auto-research" to have the Claude CLI research the account via WebFetch + WebSearch.
-3. **Audit evidence.** Click "Run extraction audit on pending" — each fact is checked against its snippet. Disputed rows show a reason and a suggested correction.
-4. **Add a contact** (optional; sets the buyer archetype for the drafter).
-5. **Create a sequence.** Pick channels per touch (email / LinkedIn).
-6. **Draft each touch.** The drafter uses only verified evidence. The validator ensures every cited claim is a verbatim substring of its evidence snippet. If the draft fails validation, it retries once with a correction message.
-7. **Run critics.** Three critics score each draft:
-   - **Skeptical Buyer** (Sonnet) — "Would I delete this in 2 seconds?"
-   - **Sales Coach** (Sonnet) — scores against every principle in `data/principles.md`.
-   - **Writing Editor** (Haiku) — concision, AI-tell phrases, active voice.
-8. **Accept rewrites.** Each accepted rewrite creates a new immutable revision; prior revisions and their critiques are preserved.
-9. **Export.** Download `.eml` files for email touches and `.txt` for LinkedIn. Touch 1 is copied to clipboard.
-
-## Key files
-- `data/principles.md` — the Sales Coach critic rubric. Edit as your tactical bar evolves.
-- `data/icp.md` — ICP brief. Read by the drafter on every touch. Fill in before your first draft.
-- `skills/` — Claude Code-compatible skill files used by the CLI subprocess.
-- `docs/superpowers/specs/` — full design spec (v2).
-- `docs/superpowers/plans/` — implementation plan.
-
-## Architecture
-
-Next.js 16 App Router + SQLite (Drizzle ORM) + `claude` CLI subprocess for every LLM call. No Anthropic API key is used — the CLI authenticates via the owner's existing Max 20 OAuth session.
-
-Three layers with strict contracts:
-1. **Evidence (spine):** typed, append-only store. Every fact has a `source_url`, `snippet` (≤1500 char verbatim excerpt), and `extractionStatus` (`pending_audit` | `verified` | `disputed`). Only `verified` rows can be cited in a draft.
-2. **Drafting:** pulls verified evidence, calls Claude, emits `cited_evidence_ids` + `supporting_spans` (verbatim substrings of snippets). Validator rejects any span that isn't a substring; one-retry loop on failure.
-3. **Critique:** 3 parallel critics produce structured findings. Accept/reject per suggestion. Accepting a rewrite creates a new immutable `touch_revisions` row; prior revisions remain intact.
-
-## Scope
-
-v1 MVP. Out of scope:
-- SMTP/Gmail sending (copy-paste the `.eml` into Gmail).
-- CRM sync.
-- Multi-user / SaaS.
-- Deep Research paste parser, Perplexity MCP, GPT-5 critic — deferred to v1.1+.
-
-See `docs/superpowers/specs/2026-04-17-sales-tool-design.md` §10, §11.
+See [docs/demo.md](docs/demo.md) for a 5-minute walkthrough that takes a public company through every stage of the pipeline.
 
 ## Tests
 
 ```bash
-pnpm test
 pnpm typecheck
+pnpm test
 pnpm build
 ```
+
+## Status
+
+v2 — see [docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md](docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md) for the implementation plan.
