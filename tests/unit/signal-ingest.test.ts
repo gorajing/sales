@@ -251,8 +251,8 @@ describe('SignalPayload schema — metadata size cap', () => {
     expect(SignalPayload.safeParse({ ...validBase, metadata: huge }).success).toBe(false);
   });
 
-  it('accepts metadata at the boundary (under cap)', () => {
-    const fits = { blob: 'x'.repeat(7000) };  // ~7KB serialized, well under 8KB
+  it('accepts metadata under the cap', () => {
+    const fits = { blob: 'x'.repeat(7000) };  // ~7KB serialized, under the 8KB cap
     expect(SignalPayload.safeParse({ ...validBase, metadata: fits }).success).toBe(true);
   });
 });
