@@ -239,9 +239,21 @@ describe('SignalPayload schema — source/captured_by matrix (anti-spoofing)', (
 });
 
 describe('SignalPayload schema — metadata size cap', () => {
-  it('rejects metadata > 8KB serialized', () => {
+  it('rejects metadata > 8KB serialized (ASCII case)', () => {
     const huge = { blob: 'x'.repeat(9000) };
     expect(SignalPayload.safeParse({ ...validBase, metadata: huge }).success).toBe(false);
+  });
+
+  it('rejects metadata > 8KB by UTF-8 bytes even when JS .length is shorter', () => {
+    // Multi-byte chars: each '🙂' is 4 bytes UTF-8 but 2 chars in JS .length.
+    // This payload is ~6KB by .length but ~12KB by UTF-8 bytes — must reject.
+    const huge = { blob: '🙂'.repeat(3000) };
+    expect(SignalPayload.safeParse({ ...validBase, metadata: huge }).success).toBe(false);
+  });
+
+  it('accepts metadata at the boundary (under cap)', () => {
+    const fits = { blob: 'x'.repeat(7000) };  // ~7KB serialized, well under 8KB
+    expect(SignalPayload.safeParse({ ...validBase, metadata: fits }).success).toBe(true);
   });
 });
 
@@ -273,55 +285,44 @@ describe('TRUSTED_SOURCES contract', () => {
   });
 });
 
-// Drift guards: catch the case where SIGNAL_SOURCE / SIGNAL_TYPE / CAPTURED_BY
-// fall out of sync with the corresponding evidence enums in db/schema.ts.
-// Drizzle exposes column enum values via the column's $type metadata, but the
-// cleanest check is to walk the runtime-accessible config. We use a string
-// allowlist sourced from the schema source for clarity.
+// Drift guards: assert directly against Drizzle's runtime `enumValues` so the
+// test fails the moment db/schema.ts diverges from the signal layer constants.
+// No hardcoded mirrors — this catches drift the same day it lands.
 describe('Schema enum drift guards (signals vs db/schema.ts:evidence)', () => {
-  // Hard-coded mirrors of db/schema.ts:evidence.sourceType and capturedBy. If
-  // that file changes, update these arrays AND the constants in lib/signals/
-  // types.ts together. The tests below assert the relationship; they don't
-  // re-derive it (that would defeat the purpose of a drift guard).
-  const EVIDENCE_SOURCE_TYPE_ENUM_FROM_SCHEMA = [
-    'website', 'linkedin', 'news', '10k', 'job_post', 'podcast',
-    'manual', 'perplexity', 'deep_research',
-    'intent_data', 'web_traffic', 'form_fill', 'github_event',
-    'earnings_call', 'press_release', 'social_post',
-    'crm_record', 'engagement_event',
-  ] as const;
-  const EVIDENCE_CAPTURED_BY_ENUM_FROM_SCHEMA = [
-    'claude_cli', 'manual', 'perplexity_mcp', 'chatgpt_mcp', 'deep_research_paste',
-    'webhook', 'connector_github', 'connector_salesforce',
-    'connector_hubspot', 'connector_outreach',
-  ] as const;
+  const evidenceSourceTypeEnum = (schema.evidence.sourceType as any).enumValues as readonly string[];
+  const evidenceCapturedByEnum = (schema.evidence.capturedBy as any).enumValues as readonly string[];
+  const evidenceSignalTypeEnum = (schema.evidence.signalType as any).enumValues as readonly string[];
 
-  it('SIGNAL_SOURCE values are all present in evidence.source_type', () => {
+  it('exposes evidence.sourceType.enumValues at runtime', () => {
+    expect(Array.isArray(evidenceSourceTypeEnum)).toBe(true);
+    expect(evidenceSourceTypeEnum.length).toBeGreaterThan(0);
+  });
+
+  it('SIGNAL_SOURCE is a subset of evidence.source_type', () => {
     for (const s of SIGNAL_SOURCE) {
-      expect(EVIDENCE_SOURCE_TYPE_ENUM_FROM_SCHEMA).toContain(s);
+      expect(evidenceSourceTypeEnum).toContain(s);
     }
   });
 
-  it('CAPTURED_BY values are all present in evidence.captured_by', () => {
+  it('CAPTURED_BY is a subset of evidence.captured_by', () => {
     for (const cb of CAPTURED_BY) {
-      expect(EVIDENCE_CAPTURED_BY_ENUM_FROM_SCHEMA).toContain(cb);
+      expect(evidenceCapturedByEnum).toContain(cb);
     }
   });
 
-  it('schema.evidence Drizzle table is reachable for cross-checks', () => {
-    // Spot-check: the columns we care about exist on the runtime schema object.
-    // If the column names or enum values change, the schema test in
-    // tests/unit/schema.test.ts fails first; this is the secondary guard for
-    // signal-side consumers.
-    expect(Object.keys(schema.evidence)).toContain('sourceType');
-    expect(Object.keys(schema.evidence)).toContain('capturedBy');
-    expect(Object.keys(schema.evidence)).toContain('signalType');
-  });
-
-  it('SIGNAL_TYPE intentionally omits "none" (the schema default)', () => {
-    // 'none' is the resting state for non-signal evidence (auto-research output);
-    // ingest paths must always classify, so 'none' is not a valid SignalPayload
-    // value.
-    expect((SIGNAL_TYPE as readonly string[]).includes('none')).toBe(false);
+  it('SIGNAL_TYPE is a subset of evidence.signal_type minus "none"', () => {
+    // evidence.signal_type includes 'none' (the resting state for non-signal
+    // evidence — e.g. rows from auto-research). Ingest paths must always
+    // classify, so SIGNAL_TYPE excludes 'none'. This test asserts both
+    // directions: every SIGNAL_TYPE value is in the schema enum, and the
+    // schema enum minus 'none' equals SIGNAL_TYPE.
+    for (const t of SIGNAL_TYPE) {
+      expect(evidenceSignalTypeEnum).toContain(t);
+    }
+    expect(evidenceSignalTypeEnum).toContain('none');
+    expect((SIGNAL_TYPE as readonly string[])).not.toContain('none');
+    const schemaSignalTypesMinusNone = evidenceSignalTypeEnum.filter((v) => v !== 'none').sort();
+    const signalTypeSorted = [...SIGNAL_TYPE].sort();
+    expect(schemaSignalTypesMinusNone).toEqual(signalTypeSorted);
   });
 });

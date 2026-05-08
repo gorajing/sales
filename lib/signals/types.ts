@@ -163,9 +163,12 @@ export const SignalPayload = z.object({
   captured_by: z.enum(CAPTURED_BY).optional(),
   metadata: z.record(z.string(), z.unknown())
     .refine((m) => {
-      try { return JSON.stringify(m).length <= MAX_METADATA_BYTES; }
+      // Use UTF-8 byte length, not String.length (which is UTF-16 code units).
+      // A 4-byte emoji is `length === 2` in JS but `4` bytes encoded — without
+      // this, the cap silently allows ~2× the stated limit for non-ASCII.
+      try { return Buffer.byteLength(JSON.stringify(m), 'utf8') <= MAX_METADATA_BYTES; }
       catch { return false; }
-    }, { message: `metadata exceeds ${MAX_METADATA_BYTES} bytes serialized` })
+    }, { message: `metadata exceeds ${MAX_METADATA_BYTES} bytes serialized (UTF-8)` })
     .optional(),
 }).strict()
   .refine((p) => {
