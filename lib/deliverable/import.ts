@@ -1,4 +1,4 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { db, schema } from '@/db';
 import { newId } from '../id';
 import type { ParsedDeliverable } from '../claude/types';
@@ -55,14 +55,17 @@ export async function importParsedDeliverable(
       }
       accountIds.push(accountId);
 
-      // Resolve-or-skip contacts. Imports occasionally include a contact that
-      // already exists by email under a different account — without a check
-      // the unique index throws and the whole import aborts.
+      // Resolve-or-skip contacts. Re-imports of the same deliverable can
+      // include the same person again; we identify by (accountId, fullName)
+      // since parsed contacts don't carry email.
       for (const c of parsedAccount.contacts) {
         const existingContact = tx.select().from(schema.contacts)
-          .where(eq(schema.contacts.fullName, c.full_name))
+          .where(and(
+            eq(schema.contacts.accountId, accountId),
+            eq(schema.contacts.fullName, c.full_name),
+          ))
           .get();
-        if (existingContact && existingContact.accountId === accountId) {
+        if (existingContact) {
           continue;
         }
         const contactId = newId('contact');
