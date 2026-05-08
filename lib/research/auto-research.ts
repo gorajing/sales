@@ -30,6 +30,7 @@ export async function autoResearchAccount(
   });
 
   const ids: string[] = [];
+  const capturedAt = new Date().toISOString();  // ISO 8601 with ms — matches v2 timestamp invariant
   for (const item of result.evidence) {
     // Cannot substring-verify here since we don't have the full source text;
     // Extraction Audit critic handles that on a per-row basis.
@@ -42,6 +43,7 @@ export async function autoResearchAccount(
       extractedFact: item.extracted_fact,
       confidence: item.confidence,
       capturedBy: 'claude_cli',
+      capturedAt,
       extractionStatus: 'pending_audit',
     }).run();
     ids.push(id);

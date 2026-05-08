@@ -71,6 +71,18 @@ describe('schema v2 (signals/scoring/routing)', () => {
     expect(cols).not.toContain('ruleId');
   });
 
+  it('rejects routing_assignments with NULL scoreId at the column level', () => {
+    const { db } = freshDb();
+    db.insert(schema.accounts).values({ id: 'acc_1', name: 'X' }).run();
+    expect(() =>
+      db.insert(schema.routingAssignments).values({
+        id: 'ra_null', accountId: 'acc_1', ownerEmail: 'x@x.com',
+        reason: 'manual_override', routingRulesHash: 'rh_x',
+        scoreId: null as any,
+      }).run()
+    ).toThrow();
+  });
+
   it('exports alerts with cooldownKey for dedupe', () => {
     expect(schema.alerts).toBeDefined();
     const cols = Object.keys(schema.alerts);
@@ -171,36 +183,46 @@ describe('schema v2 (signals/scoring/routing)', () => {
     ).toThrow();
   });
 
-  it('enforces partial unique on accounts.domain (case where set, multi-null OK)', () => {
+  it('enforces partial unique on accounts.domain — NULLs and empty strings allowed; case-insensitive', () => {
     const { db } = freshDb();
     // Two NULL domains are fine.
     db.insert(schema.accounts).values({ id: 'acc_a', name: 'A' }).run();
     db.insert(schema.accounts).values({ id: 'acc_b', name: 'B' }).run();
+    // Two empty-string domains are fine (excluded from the partial index).
+    db.insert(schema.accounts).values({ id: 'acc_e1', name: 'E1', domain: '' }).run();
+    db.insert(schema.accounts).values({ id: 'acc_e2', name: 'E2', domain: '' }).run();
     // First non-null domain inserts cleanly.
     db.insert(schema.accounts).values({ id: 'acc_c', name: 'C', domain: 'shared.example' }).run();
-    // Duplicate non-null domain fails.
+    // Same domain different case — must collide via lower().
     expect(() =>
       db.insert(schema.accounts).values({
-        id: 'acc_d', name: 'D', domain: 'shared.example',
+        id: 'acc_d', name: 'D', domain: 'SHARED.example',
+      }).run()
+    ).toThrow();
+    expect(() =>
+      db.insert(schema.accounts).values({
+        id: 'acc_d2', name: 'D2', domain: 'shared.example',
       }).run()
     ).toThrow();
   });
 
-  it('enforces partial unique on contacts.email (case where set, multi-null OK)', () => {
+  it('enforces partial unique on contacts.email — NULLs and empty allowed; case-insensitive', () => {
     const { db } = freshDb();
     db.insert(schema.accounts).values({ id: 'acc_1', name: 'X' }).run();
+    db.insert(schema.contacts).values({ id: 'ct_a', accountId: 'acc_1', fullName: 'A' }).run();
+    db.insert(schema.contacts).values({ id: 'ct_b', accountId: 'acc_1', fullName: 'B' }).run();
     db.insert(schema.contacts).values({
-      id: 'ct_a', accountId: 'acc_1', fullName: 'A',
+      id: 'ct_e1', accountId: 'acc_1', fullName: 'E1', email: '',
     }).run();
     db.insert(schema.contacts).values({
-      id: 'ct_b', accountId: 'acc_1', fullName: 'B',
+      id: 'ct_e2', accountId: 'acc_1', fullName: 'E2', email: '',
     }).run();
     db.insert(schema.contacts).values({
       id: 'ct_c', accountId: 'acc_1', fullName: 'C', email: 'shared@example.com',
     }).run();
     expect(() =>
       db.insert(schema.contacts).values({
-        id: 'ct_d', accountId: 'acc_1', fullName: 'D', email: 'shared@example.com',
+        id: 'ct_d', accountId: 'acc_1', fullName: 'D', email: 'Shared@Example.COM',
       }).run()
     ).toThrow();
   });

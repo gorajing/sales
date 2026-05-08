@@ -35,6 +35,12 @@ export async function GET(req: Request) {
   return NextResponse.json({ contacts: q.all() });
 }
 
+function normalizeEmail(e: string | undefined): string | null {
+  if (e === undefined) return null;
+  const t = e.toLowerCase().trim();
+  return t === '' ? null : t;
+}
+
 export async function POST(req: Request) {
   const body = await req.json();
   const parsed = CreateContact.safeParse(body);
@@ -42,7 +48,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: parsed.error.issues }, { status: 400 });
   }
   const id = newId('contact');
-  db.insert(schema.contacts).values({ id, ...parsed.data }).run();
+  // Normalize email so case variants don't slip past the case-insensitive
+  // partial unique index on contacts.email.
+  db.insert(schema.contacts).values({
+    id,
+    ...parsed.data,
+    email: normalizeEmail(parsed.data.email) ?? undefined,
+  }).run();
   return NextResponse.json({ id }, { status: 201 });
 }
 
@@ -53,6 +65,9 @@ export async function PATCH(req: Request) {
     return NextResponse.json({ error: parsed.error.issues }, { status: 400 });
   }
   const { id, ...patch } = parsed.data;
+  if (patch.email !== undefined) {
+    patch.email = normalizeEmail(patch.email) ?? undefined;
+  }
   db.update(schema.contacts).set(patch).where(eq(schema.contacts.id, id)).run();
   return NextResponse.json({ ok: true });
 }

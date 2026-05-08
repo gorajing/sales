@@ -24,6 +24,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: parsed.error.issues }, { status: 400 });
   }
   const id = newId('account');
-  db.insert(schema.accounts).values({ id, ...parsed.data }).run();
+  // Normalize domain to lowercase and treat blank as null so the
+  // case-insensitive partial unique index can do its job.
+  const trimmedDomain = parsed.data.domain?.toLowerCase().trim() || null;
+  db.insert(schema.accounts).values({
+    id,
+    ...parsed.data,
+    domain: trimmedDomain,
+  }).run();
   return NextResponse.json({ id }, { status: 201 });
 }

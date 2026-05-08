@@ -10,8 +10,12 @@ export const accounts = sqliteTable('accounts', {
   notes: text('notes'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (t) => ({
+  // Case-insensitive partial unique index: stores any case the user types,
+  // but treats 'Acme.com' and 'acme.com' as the same value for uniqueness.
+  // Excludes NULL and empty-string domains so unset values can coexist.
   domainUnique: uniqueIndex('accounts_domain_unique')
-    .on(t.domain).where(sql`domain IS NOT NULL`),
+    .on(sql`lower(${t.domain})`)
+    .where(sql`domain IS NOT NULL AND domain <> ''`),
 }));
 
 export const contacts = sqliteTable('contacts', {
@@ -27,8 +31,10 @@ export const contacts = sqliteTable('contacts', {
   notes: text('notes'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (t) => ({
+  // Same case-insensitive partial pattern as accounts.domain.
   emailUnique: uniqueIndex('contacts_email_unique')
-    .on(t.email).where(sql`email IS NOT NULL`),
+    .on(sql`lower(${t.email})`)
+    .where(sql`email IS NOT NULL AND email <> ''`),
 }));
 
 export const evidence = sqliteTable('evidence', {
@@ -57,6 +63,12 @@ export const evidence = sqliteTable('evidence', {
   }).notNull().default('pending_audit'),
   confidence: text('confidence', { enum: ['high', 'medium', 'low'] })
     .notNull().default('medium'),
+  // NOTE: this default still produces SQLite's "YYYY-MM-DD HH:MM:SS" format,
+  // not the ISO-8601-with-ms shape the new v2 tables use. Changing it requires
+  // a SQLite table-rebuild migration on a v1 hot table; for v2 we instead
+  // require all evidence insert paths to pass an explicit ISO string
+  // (`new Date().toISOString()`). The default is the fallback for any caller
+  // that still omits the field.
   capturedAt: text('captured_at').notNull().default(sql`CURRENT_TIMESTAMP`),
   capturedBy: text('captured_by', {
     enum: ['claude_cli', 'manual', 'perplexity_mcp', 'chatgpt_mcp',
@@ -218,7 +230,12 @@ export const routingAssignments = sqliteTable('routing_assignments', {
   // Edits to routing rules → new hash → new assignment under the new rules
   // without violating the unique index.
   routingRulesHash: text('routing_rules_hash').notNull(),
-  scoreId: text('score_id').references(() => leadScores.id),
+  // NOT NULL: every routing decision in v2 is tied to a specific lead score.
+  // SQLite treats NULLs as distinct in unique indexes, which would let
+  // duplicate (account_id, NULL, hash) rows slip past the uniqueness check
+  // — so the column itself disallows null. Manual override (no score) is a
+  // v1.5 feature and will need a separate partial index on score_id IS NULL.
+  scoreId: text('score_id').notNull().references(() => leadScores.id),
   assignedAt: text('assigned_at').notNull()
     .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
 }, (t) => ({

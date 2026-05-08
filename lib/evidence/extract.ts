@@ -30,6 +30,7 @@ export async function extractFromPaste(
   });
 
   const ids: string[] = [];
+  const capturedAt = new Date().toISOString();  // ISO 8601 with ms — matches v2 timestamp invariant
   for (const item of result.evidence) {
     if (!input.rawText.toLowerCase().includes(item.snippet.toLowerCase())) {
       // Drop any snippet that isn't a literal substring of the provided text
@@ -46,6 +47,7 @@ export async function extractFromPaste(
       extractedFact: item.extracted_fact,
       confidence: item.confidence,
       capturedBy: input.capturedBy,
+      capturedAt,
       extractionStatus: 'pending_audit',
     }).run();
     ids.push(id);
