@@ -5,6 +5,9 @@ const PREFIX = {
   sequence: 'sq', touch: 'to', touchRevision: 'tr',
   critique: 'cr', extractionAudit: 'ea', callPrepBrief: 'cp',
   deliverable: 'del', deliverableAccount: 'da',
+  // v2 additions — routing rules live in Markdown so no routingRule prefix.
+  leadScore: 'ls', routingAssignment: 'ra',
+  alert: 'al', engagementEvent: 'ee',
 } as const;
 
 export type IdKind = keyof typeof PREFIX;
