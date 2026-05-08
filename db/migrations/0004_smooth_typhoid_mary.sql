@@ -14,7 +14,7 @@ UPDATE `contacts` SET `email` = lower(trim(`email`)) WHERE `email` IS NOT NULL A
 -- If normalization produced TRUE lowercase duplicates (e.g. 'acme.com' on two
 -- rows after lowercasing 'Acme.com' + 'acme.com'), the next CREATE UNIQUE
 -- INDEX will fail and the transaction rolls back. Operator must dedupe per
--- docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md Task 1.1.5.
+-- docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md Task 1.1.5.
 CREATE UNIQUE INDEX `accounts_domain_unique` ON `accounts` (lower("domain")) WHERE domain IS NOT NULL AND domain <> '';--> statement-breakpoint
 CREATE UNIQUE INDEX `contacts_email_unique` ON `contacts` (lower("email")) WHERE email IS NOT NULL AND email <> '';--> statement-breakpoint
 -- Preflight: 0003 allowed routing_assignments.score_id IS NULL. 0004 makes

@@ -6,7 +6,7 @@ Every factual claim in every generated outreach traces to a verified evidence ro
 
 Built on Claude Code primitives: each LLM call is a scoped CLI subprocess with `--allowed-tools`, the same pattern Claude Code itself ships.
 
-## Mapped to GTM Engineering primitives
+## Mapped to AI Sales Automation primitives
 
 | Primitive | Module | Notes |
 |---|---|---|
@@ -55,4 +55,4 @@ pnpm build
 
 ## Status
 
-v2 — see [docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md](docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md) for the implementation plan.
+v2 — see [docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md](docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md) for the implementation plan.

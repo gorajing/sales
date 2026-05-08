@@ -4,7 +4,7 @@ This document explains the six non-obvious design decisions in this tool. None o
 
 The tool is a personal, local-first SDR automation layer. The drafter declares its citations as `cited_evidence_ids` and verbatim `supporting_spans`; a substring validator runs over those declarations and surfaces any that aren't verbatim substrings of the cited evidence snippets. Drafts are critiqued against a user-owned principles file. Revisions are preserved as new rows rather than overwrites. The decisions below are about why those guarantees are designed in at the data and runtime layers rather than asserted in prompts — and where the v1 implementation falls short of the architectural ideal.
 
-**Scope of this essay.** The decisions describe the architecture that v1 establishes and that the v2 plan ([docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md](superpowers/plans/2026-05-06-anthropic-gtm-revamp.md)) extends. Where a feature only lands in v2, this is called out explicitly.
+**Scope of this essay.** The decisions describe the architecture that v1 establishes and that the v2 plan ([docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md](superpowers/plans/2026-05-06-ai-sales-automation-revamp.md)) extends. Where a feature only lands in v2, this is called out explicitly.
 
 ---
 
@@ -68,7 +68,7 @@ Concurrency is bounded by `CLAUDE_MAX_CONCURRENT` (default 3) — the Max plan t
 
 The skills directory ([`skills/`](../skills/)) holds Claude Code-format SKILL.md files. v1 reads these files into the subprocess prompt directly (see [`lib/claude/prompts/draft-touch.ts`](../lib/claude/prompts/draft-touch.ts)) rather than relying on the CLI's runtime skill discovery. This is a deliberate v1 simplification — keeping the skill content in the prompt makes test fixtures and prompt diffs reproducible — but the SKILL.md format itself is the same Claude Code uses, so promotion to runtime discovery is a one-line change later.
 
-The structural benefit isn't only auth and billing. The same Claude agent that runs at Anthropic in production is the agent running here, with the same tool-allowlist mechanism available at every call site. When something works in this tool, it transfers; when something breaks, the fix transfers too.
+The structural benefit isn't only auth and billing. The same Claude CLI surface an operator already uses for agentic work is the surface exercised here, with the same tool-allowlist mechanism available at every call site. When something works in this tool, the operational lesson transfers to other Claude-based sales workflows; when something breaks, the fix is in the same layer the operator already understands.
 
 ---
 
@@ -107,4 +107,4 @@ This pattern should propagate. When new LLM-emitted data enters the system — a
 
 It is not a CRM. v1 does not authenticate users, sync to Salesforce, send email through SMTP, or run as a multi-tenant SaaS; v2 adds lead scoring, routing, alerts, and an engagement loop, but still does not send outreach, sync to a CRM, authenticate users, or run multi-tenant. The decisions above are about what makes the *generation and audit* loop trustworthy. Outreach sending, CRM sync, auth/RBAC, and team-multi-tenant workflows are explicitly out of scope for both versions — the existing CRMs do those well, and replicating them would crowd out the parts that are actually novel.
 
-What this *is* is a working demonstration that the GTM-engineering primitives — typed evidence, structural anti-hallucination on cited claims, user-owned configuration, scoped LLM tool surfaces, immutable revision history, audit-as-column — compose into a tool an SDR can use, and that an SDR leader can steer, without engineering being on the critical path for every behavior change.
+What this *is* is a working demonstration that AI sales automation primitives — typed evidence, structural anti-hallucination on cited claims, user-owned configuration, scoped LLM tool surfaces, immutable revision history, audit-as-column — compose into a tool an SDR can use, and that an SDR leader can steer, without engineering being on the critical path for every behavior change.
