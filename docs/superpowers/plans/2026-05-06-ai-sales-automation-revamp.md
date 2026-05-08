@@ -1,8 +1,8 @@
-# Sales Tool — Anthropic GTM Engineer Revamp Plan
+# Sales Tool — AI Sales Automation Revamp Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Extend the existing Sales tool from "personal local-first outreach" to an SDR-side reference architecture that demonstrates every primitive in the Anthropic GTM Engineer JD (inbound signal ingestion, lead scoring with auditable rationale, rules-based routing, tier-transition alerts, real GitHub + stubbed CRM/SEP/marketing connectors, engagement-outcome feedback into the drafter), then use the tool on itself to apply.
+**Goal:** Extend the existing Sales tool from "personal local-first outreach" to an SDR-side reference architecture that demonstrates the primitives shared across AI sales, GTM engineering, and sales automation roles (inbound signal ingestion, lead scoring with auditable rationale, rules-based routing, tier-transition alerts, real GitHub + stubbed CRM/SEP/marketing connectors, engagement-outcome feedback into the drafter), then use the tool on itself to apply to whichever target company is highest priority.
 
 **Architecture:** Additive layers on the existing Evidence spine. New tables (`lead_scores`, `routing_assignments`, `alerts`, `engagement_events`) reference existing `accounts`/`contacts`/`evidence`. Routing rules live as Markdown (`data/routing-rules.md`) parsed in-memory — there is no `routing_rules` DB table. New `lib/scoring`, `lib/routing`, `lib/alerts`, `lib/connectors`, `lib/engagement` modules; each has the same Zod-typed I/O + dependency-injected `spawn` pattern as the existing drafter. All Claude calls go through the existing `lib/claude/run.ts` subprocess runner. New webhook + connector interface ingests typed `SignalPayload`s that become Evidence rows tagged with `signalType`. Alerts dispatch to Slack/email/webhook with file-based fallback when secrets are unset.
 
@@ -137,7 +137,7 @@ Sales/
 - [ ] **Step 0.1.1: Verify clean tree, on main, up to date**
 
 This repository may already contain the two plan docs as untracked files:
-`PLAN-anthropic.md` and `docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md`.
+`PLAN-ai-sales.md` and `docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md`.
 Before implementation, either commit those plan docs on `main` or explicitly
 accept that they are the only untracked files. Do not start with unrelated
 dirty files.
@@ -157,10 +157,10 @@ cleanly scoped.
 - [ ] **Step 0.1.2: Cut feature branch**
 
 ```bash
-git checkout -b feature/anthropic-gtm-revamp
+git checkout -b feature/ai-sales-automation
 ```
 
-Expected output: `Switched to a new branch 'feature/anthropic-gtm-revamp'`
+Expected output: `Switched to a new branch 'feature/ai-sales-automation'`
 
 - [ ] **Step 0.1.3: Ignore application/ and outbox/ contents in `.gitignore`**
 
@@ -205,7 +205,7 @@ Every factual claim in every generated outreach traces to a verified evidence ro
 
 Built on Claude Code primitives: each LLM call is a scoped CLI subprocess with `--allowed-tools`, the same pattern Claude Code itself ships.
 
-## Mapped to GTM Engineering primitives
+## Mapped to AI Sales Automation primitives
 
 | Primitive | Module | Notes |
 |---|---|---|
@@ -254,7 +254,7 @@ pnpm build
 
 ## Status
 
-v2 — see [docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md](docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md) for the implementation plan.
+v2 — see [docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md](docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md) for the implementation plan.
 ```
 
 - [ ] **Step 0.2.2: Commit**
@@ -275,7 +275,7 @@ Expected output: commit hash + 1 file changed.
 
 - [ ] **Step 0.3.1: Write the essay**
 
-Create `docs/architecture.md` with the six-section structure described in `PLAN-anthropic.md` Phase 0. Each section is 200–400 words. Sections:
+Create `docs/architecture.md` with the six-section structure described in `PLAN-ai-sales.md` Phase 0. Each section is 200–400 words. Sections:
 
 1. **Why Evidence is a spine, not a sidecar** — explain append-only + `extractionStatus` + `supersededBy`. Reference the existing `db/schema.ts:evidence` table. Concrete: a fact written by Claude CLI is `pending_audit`; it becomes `verified` only after the Extraction Audit critic agrees the snippet supports the fact. Drafts can only cite `verified` rows.
 2. **Why the validator is a structural invariant, not a prompt instruction** — explain `lib/evidence/validate.ts` substring check. Concrete: `validateDraft` rejects any `supporting_spans[*].span` that is not a normalized-substring of the cited evidence's snippet. Normalization = lowercase + collapsed whitespace. The drafter retries once on failure with a correction message; remaining issues surface to the operator.
@@ -311,7 +311,7 @@ git commit -m "docs: add architecture essay covering 6 design decisions"
 
 - [ ] **Step 0.4.1: Write demo.md**
 
-Create `docs/demo.md` with this exact structure (fill body with concrete commands and expected screenshots — use a real public company name like Vercel, Linear, or Retool, not Anthropic, to save Anthropic for Phase 6):
+Create `docs/demo.md` with this exact structure (fill body with concrete commands and expected screenshots — use a real public company name like Vercel, Linear, or Retool, not the current target company, so the final application evidence pack stays clean):
 
 ```markdown
 # 5-minute demo — [Company]
@@ -3152,7 +3152,7 @@ export async function dispatchTierPromotion(
     try {
       if (target === 'slack') sent.push(await sendSlack(text, alertId, sendAt));
       else if (target === 'email') sent.push(
-        await sendEmail(`[GTM Alert] ${account?.name ?? accountId}`, text, alertId, sendAt));
+        await sendEmail(`[Signal Alert] ${account?.name ?? accountId}`, text, alertId, sendAt));
       else if (target === 'webhook') sent.push(
         await sendWebhook({ alertId, text, accountId }, alertId, sendAt));
     } catch (err) {
@@ -3932,9 +3932,9 @@ Each entry watches a single repository for events. Set `GITHUB_TOKEN` env var
 Supported `target` formats: `repo:<owner>/<name>` only. (`org:` and `user:`
 deferred to v1.5.)
 
-## anthropic/anthropic-cookbook
+## modelcontextprotocol/servers
 
-- target: repo:anthropic/anthropic-cookbook
+- target: repo:modelcontextprotocol/servers
 - signals: [stars, issue_create]
 - classification: prospect
 
@@ -5220,24 +5220,36 @@ git commit -m "feat(engagement): nightly digest script writes principle-outcomes
 
 ---
 
-## Phase 6 — Closed-Loop Application Demo
+## Phase 6 — Closed-Loop Target Application Demo
 
-### Task 6.1: Research Anthropic + audit evidence
+The final demo is target-company agnostic. Use the same workflow for Anthropic, OpenAI, Harvey, Clay, Cursor, or any other AI sales role by changing the three environment variables below.
+
+### Task 6.1: Research target company + audit evidence
 
 **Files:** none new — uses existing pipeline. The commands below match the existing API contracts (see `app/api/accounts/route.ts`, `app/api/evidence/research/route.ts`, `app/api/evidence/audit/route.ts`, `app/api/sequences/route.ts`, `app/api/touches/draft/route.ts`, `app/api/touches/critique/route.ts`, `app/api/export/route.ts`).
 
 - [ ] **Step 6.1.1: Create the account**
 
+Set the target once:
+
+```bash
+export TARGET_COMPANY="Anthropic"
+export TARGET_DOMAIN="anthropic.com"
+export TARGET_ROLE_LABEL="AI sales automation"
+```
+
+Anthropic is the example because it was the first target for this plan. For another role, change only those three values.
+
 ```bash
 curl -sS -X POST http://localhost:3000/api/accounts \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Anthropic","domain":"anthropic.com"}'
+  -d "{\"name\":\"$TARGET_COMPANY\",\"domain\":\"$TARGET_DOMAIN\"}"
 ```
 
-Expected: 201 with `{ "id": "acc_..." }`. Save the id as `ANTHROPIC_ID` in your shell:
+Expected: 201 with `{ "id": "acc_..." }`. Save the id as `TARGET_ACCOUNT_ID` in your shell:
 
 ```bash
-export ANTHROPIC_ID=acc_<paste-here>
+export TARGET_ACCOUNT_ID=acc_<paste-here>
 ```
 
 - [ ] **Step 6.1.2: Run auto-research**
@@ -5245,7 +5257,7 @@ export ANTHROPIC_ID=acc_<paste-here>
 ```bash
 curl -sS -X POST "http://localhost:3000/api/evidence/research" \
   -H 'Content-Type: application/json' \
-  -d "{\"accountId\":\"$ANTHROPIC_ID\"}"
+  -d "{\"accountId\":\"$TARGET_ACCOUNT_ID\"}"
 ```
 
 Expected: 201 with `{ "evidenceIds": [...] }`. Wait ~30s for completion.
@@ -5255,14 +5267,14 @@ Expected: 201 with `{ "evidenceIds": [...] }`. Wait ~30s for completion.
 ```bash
 curl -sS -X POST "http://localhost:3000/api/evidence/audit" \
   -H 'Content-Type: application/json' \
-  -d "{\"accountId\":\"$ANTHROPIC_ID\"}"
+  -d "{\"accountId\":\"$TARGET_ACCOUNT_ID\"}"
 ```
 
 Expected: 200 with audit counts; rows transition to `verified` or `disputed`. Wait ~15s.
 
 - [ ] **Step 6.1.4: Manually review evidence in the UI**
 
-Open `http://localhost:3000/accounts/$ANTHROPIC_ID/evidence`. For each `disputed` row, decide: accept correction, override to verified, or remove. Promote any `pending_audit` rows whose audit missed nuance.
+Open `http://localhost:3000/accounts/$TARGET_ACCOUNT_ID/evidence`. For each `disputed` row, decide: accept correction, override to verified, or remove. Promote any `pending_audit` rows whose audit missed nuance.
 
 - [ ] **Step 6.1.5: Snapshot the evidence pack via direct DB read**
 
@@ -5296,7 +5308,7 @@ Run it:
 
 ```bash
 mkdir -p application
-pnpm tsx scripts/dump-evidence.ts "$ANTHROPIC_ID"
+pnpm tsx scripts/dump-evidence.ts "$TARGET_ACCOUNT_ID"
 ```
 
 Expected: `application/evidence-pack.json` exists with the account and verified evidence rows.
@@ -5314,14 +5326,14 @@ git commit -m "feat(scripts): dump-evidence.ts — export verified evidence pack
 
 - [ ] **Step 6.2.1: Add a contact (manually via UI)**
 
-Open `/accounts/$ANTHROPIC_ID/contacts`. Add the GTM Engineering hiring manager (or a public-facing GTM/SDR Ops leader at Anthropic). Set archetype = `enabler` or `leader` based on the role's posture.
+Open `/accounts/$TARGET_ACCOUNT_ID/contacts`. Add the hiring manager for the target role, or a public-facing sales/GTM/RevOps leader at the target company if the direct hiring manager is not public. Set archetype = `enabler` or `leader` based on the role's posture.
 
 - [ ] **Step 6.2.2: Create a 3-touch sequence**
 
 ```bash
 SEQUENCE_JSON=$(curl -sS -X POST http://localhost:3000/api/sequences \
   -H 'Content-Type: application/json' \
-  -d "{\"accountId\":\"$ANTHROPIC_ID\",\"channels\":[\"email\",\"linkedin\",\"email\"]}")
+  -d "{\"accountId\":\"$TARGET_ACCOUNT_ID\",\"channels\":[\"email\",\"linkedin\",\"email\"]}")
 echo "$SEQUENCE_JSON"
 # Capture for next steps:
 SEQUENCE_ID=$(echo "$SEQUENCE_JSON" | jq -r '.sequenceId')
@@ -5370,7 +5382,7 @@ Expected: each call returns `{ critiques: [{ criticName, verdict, findings }, ..
 
 - [ ] **Step 6.2.6: Accept critic rewrites in the UI**
 
-Open `/accounts/$ANTHROPIC_ID/sequences/$SEQUENCE_ID`. For each touch, click "Accept" on each critic's suggested rewrite that genuinely improves the draft. Each acceptance creates a new immutable `touch_revisions` row and updates `touches.currentRevisionId`. Iterate until: Skeptical Buyer = `pass`, Sales Coach = `pass` (zero failed principles), Writing Editor = `pass`.
+Open `/accounts/$TARGET_ACCOUNT_ID/sequences/$SEQUENCE_ID`. For each touch, click "Accept" on each critic's suggested rewrite that genuinely improves the draft. Each acceptance creates a new immutable `touch_revisions` row and updates `touches.currentRevisionId`. Iterate until: Skeptical Buyer = `pass`, Sales Coach = `pass` (zero failed principles), Writing Editor = `pass`.
 
 > Note: after each accepted rewrite, the touch's `currentRevisionId` changes. Re-capture TR1/TR2/TR3 (Step 6.2.4) before re-running critics.
 
@@ -5422,10 +5434,10 @@ Expected: `application/critique-findings.json` is valid JSON with 3 entries (one
 Create `application/cover-letter.md` (~600 words). Required structure:
 
 1. **Opening (1 sentence):** "I built an SDR automation reference architecture in three weeks, then used it to write this cover letter. Every claim below traces to a verified evidence row in the attached pack."
-2. **Problem framing (1 paragraph):** quote two evidence IDs from the Anthropic evidence pack that motivate the role (e.g., GTM headcount post, public commentary on Claude Code adoption).
-3. **What I built (3 short paragraphs):** map the tool to the JD's 5 hardest bullets — lead routing, scoring, alerts, GitHub integration, conversational intelligence. Cite file paths (`lib/scoring/score.ts`, `lib/connectors/github.ts`, `lib/engagement/attribute.ts`).
+2. **Problem framing (1 paragraph):** quote two evidence IDs from the target-company evidence pack that motivate the role (e.g., GTM headcount post, public commentary on AI product adoption, sales automation roadmap, or partner ecosystem expansion).
+3. **What I built (3 short paragraphs):** map the tool to five hard AI sales automation primitives — lead routing, scoring, alerts, GitHub integration, conversational intelligence. Cite file paths (`lib/scoring/score.ts`, `lib/connectors/github.ts`, `lib/engagement/attribute.ts`).
 4. **Why this loop closes (1 paragraph):** point at the touch you generated and the critique that scored it. The artifact is the proof.
-5. **What I'd do in the first 90 days (3 bullets):** based on the evidence pack, name three specific GTM-engineering bets you'd ship. Be falsifiable.
+5. **What I'd do in the first 90 days (3 bullets):** based on the evidence pack, name three specific AI-sales automation bets you'd ship. Be falsifiable.
 
 - [ ] **Step 6.3.4: Copy architecture essay**
 
@@ -5436,7 +5448,7 @@ cp docs/architecture.md application/architecture-essay.md
 - [ ] **Step 6.3.5: Record Loom**
 
 Record a 5-minute screen capture covering:
-1. The tool open at `/inbound`. Post a fake intent signal for `anthropic.com`. Watch the score appear.
+1. The tool open at `/inbound`. Post a fake intent signal for `$TARGET_DOMAIN`. Watch the score appear.
 2. Recompute → see tier transition → see Slack mock at `outbox/slack-*.json`.
 3. Open the touch you drafted; show the critic panel + accepted rewrite.
 4. Show `application/email-touch-1.eml` rendered.
@@ -5448,7 +5460,7 @@ Save URL to `application/loom.md`:
 
 URL: <paste loom URL>
 
-5-minute walkthrough showing the tool generating its own application materials for the Anthropic GTM Engineer role.
+5-minute walkthrough showing the tool generating its own application materials for the target AI sales role.
 ```
 
 - [ ] **Step 6.3.6: Final verification of application package**
@@ -5464,7 +5476,7 @@ wc -w application/cover-letter.md
 
 - [ ] **Step 6.3.7: Verify every claim in cover-letter cites evidence**
 
-Read the cover letter. For each factual claim about Anthropic, confirm the evidence ID it points to exists in `application/evidence-pack.json`. Reject claims without backing.
+Read the cover letter. For each factual claim about the target company, confirm the evidence ID it points to exists in `application/evidence-pack.json`. Reject claims without backing.
 
 - [ ] **Step 6.3.8: Decide whether to commit the package**
 
@@ -5508,7 +5520,7 @@ Expected: all green, no errors.
 
 - [ ] **Step 6.4.4: Submit application.**
 
-Submit the role at the Anthropic careers portal. Attach:
+Submit the target role at the company's careers portal. Attach:
 - `cover-letter.md` (paste into the cover-letter field)
 - `architecture-essay.md` (attached or linked)
 - `email-touch-1.eml` (linked or attached as writing sample)
@@ -5521,8 +5533,8 @@ Reference the GitHub repo URL in the cover letter so reviewers can browse the co
 
 ```bash
 git checkout main
-git merge --no-ff feature/anthropic-gtm-revamp -m "feat: anthropic GTM revamp v2"
-git tag v2-anthropic-application
+git merge --no-ff feature/ai-sales-automation -m "feat: AI sales automation revamp v2"
+git tag v2-ai-sales-automation
 git push origin main --tags
 ```
 
@@ -5532,7 +5544,7 @@ git push origin main --tags
 
 Before declaring this plan ready for codex review:
 
-- [ ] **Spec coverage**: Every JD bullet in PLAN-anthropic.md "JD requirements → current state map" has a corresponding task in this plan.
+- [ ] **Spec coverage**: Every Role bullet in PLAN-ai-sales.md "AI sales role requirements → current state map" has a corresponding task in this plan.
 - [ ] **Placeholders**: No "TBD", "fill in", "implement appropriate error handling" without code shown.
 - [ ] **Type consistency**: `SignalPayload`, `Tier`, `RoutingContext`, `ScoringRule`, `RoutingRule`, `ScoreRationaleItem` all referenced consistently across tasks.
 - [ ] **Migrations**: Tasks 1.1 and 4.1 explicitly call `pnpm db:generate && pnpm db:migrate`.

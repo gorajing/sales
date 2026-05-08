@@ -1,18 +1,18 @@
-# Sales Tool → Anthropic GTM Engineer Plan
+# Sales Tool → AI Sales Automation Plan
 
-**Goal:** Take the existing Sales tool from "personal local-first outreach" to a reference-grade SDR automation layer that demonstrates every primitive the Anthropic GTM Engineer JD asks for, then use the tool on itself to apply.
+**Goal:** Take the existing Sales tool from "personal local-first outreach" to a reference-grade SDR automation layer that demonstrates the primitives shared across AI sales, GTM engineering, and sales automation roles, then use the tool on itself to apply to whichever target company is highest priority.
 
 **Constraint:** ~3 weeks of focused evening/weekend work. Application-ready at the end of Phase 0; portfolio-ready at the end of Phase 3; thesis-defining at the end of Phase 6.
 
 **Non-goal:** Becoming a real CRM. Real Salesforce sync, real Outreach.io send, real billing/multi-tenant SaaS — all out of scope. Mocks and stubs are fine when they demonstrate the architectural pattern.
 
-**Implementation note:** The detailed task-by-task plan in `docs/superpowers/plans/2026-05-06-anthropic-gtm-revamp.md` supersedes this high-level plan where they differ. In particular, routing rules live in `data/routing-rules.md` and are parsed in-memory; there is no `routing_rules` database table.
+**Implementation note:** The detailed task-by-task plan in `docs/superpowers/plans/2026-05-06-ai-sales-automation-revamp.md` supersedes this high-level plan where they differ. In particular, routing rules live in `data/routing-rules.md` and are parsed in-memory; there is no `routing_rules` database table.
 
 ---
 
-## JD requirements → current state map
+## AI sales role requirements → current state map
 
-| JD bullet | Current state | Gap | Phase |
+| Role bullet | Current state | Gap | Phase |
 |---|---|---|---|
 | Claude-powered productivity tooling | ✅ 8 skills, CLI runner with concurrency | None — emphasize in narrative | 0 |
 | Personalized outreach generation | ✅ Drafter + validator + 3 critics | Add engagement-loop feedback | 4 |
@@ -24,7 +24,7 @@
 | Centralized data architecture aggregating from multiple sources | 🟡 Evidence is the spine; no external connectors | Add connector layer | 3 |
 | Conversational intelligence pattern recognition | ✅ Sales Coach critic + principles file | Tie to engagement outcomes | 4 |
 | API integration with CRM/SEP/marketing/lead sources | ❌ Export only | Connector stubs + 1 real | 3 |
-| GitHub integration (specific JD callout) | ❌ None | New signal source | 3 |
+| GitHub integration (specific AI sales role callout) | ❌ None | New signal source | 3 |
 | Cross-functional feedback loops | 🟡 principles.md is editable | Add team-edit posture | 5 |
 | Built ground-up in ambiguous environments | ✅ 20+ commits, 2 weeks | None | 0 |
 
@@ -41,7 +41,7 @@ The fastest leverage is reframing what already exists. Your tool is presented as
 1. **README rewrite** (`README.md`)
    - Replace opener with: "An evidence-grounded reference architecture for AI-powered SDR automation. Working v1 below."
    - Add an "Architecture decisions and tradeoffs" section that names every non-obvious choice (CLI not API, append-only evidence, principles-as-rubric, validator as substring check) and explains *why*.
-   - Add a "Mapped to GTM Engineering primitives" table that links your modules to the canonical SDR stack vocabulary (lead capture, scoring, routing, sequencing, engagement, attribution).
+   - Add a "Mapped to AI Sales Automation primitives" table that links your modules to the canonical SDR stack vocabulary (lead capture, scoring, routing, sequencing, engagement, attribution).
 
 2. **Architecture essay** (`docs/architecture.md`, new)
    - 1500–2000 words. Six sections, one per architectural decision:
@@ -55,21 +55,21 @@ The fastest leverage is reframing what already exists. Your tool is presented as
 
 3. **Demo script** (`docs/demo.md`, new)
    - 5-minute walkthrough script: account → research → audit → contact → sequence → draft → critique → export.
-   - Use a real public company (not Anthropic — save that for Phase 6) so the screenshots are credible.
+   - Use a real public company that is not your current target company, so the screenshots are credible without exhausting the final application evidence pack.
 
 ### Verification
 - `README.md` reads as if a senior infra engineer wrote it for hiring managers, not as a tutorial.
 - `docs/architecture.md` is a standalone document a stranger could read cold.
 - A peer can replicate the demo from the script.
 
-### JD bullets satisfied
+### Role bullets satisfied
 "Engineering experience working with complex technologies, varied datasets, and building data-driven productivity solutions with AI" — you already have this; Phase 0 makes it legible.
 
 ---
 
 ## Phase 1 — Inbound, Signals, and Routing (4–5 days)
 
-This is the largest gap and the most visible in the JD. Build it as additive layers on the Evidence spine.
+This is the largest gap and the most visible in AI sales role descriptions. Build it as additive layers on the Evidence spine.
 
 ### 1A. Schema extensions (half day)
 
@@ -210,7 +210,7 @@ Reuse existing `app/accounts` components.
 ### Artifact
 A working **lead intake + scoring + routing** pipeline that produces auditable explanations for every score and every assignment.
 
-### JD bullets satisfied
+### Role bullets satisfied
 - "Build sophisticated automations for lead routing, account research, personalized outreach generation, and follow-up sequencing"
 - "Design and implement a centralized data architecture that aggregates prospect intelligence from multiple sources"
 - "Architect intelligent alert systems that notify sales teams of high-intent signals" (partial — Phase 2 closes)
@@ -275,14 +275,14 @@ export const alerts = sqliteTable('alerts', {
 ### Artifact
 End-to-end signal-to-alert pipeline. Demo: post a signal → score updates → tier transitions → Slack mock receives the message, all in <2s.
 
-### JD bullets satisfied
+### Role bullets satisfied
 - "Architect intelligent alert systems that notify sales teams of high-intent signals, inbound leads, website activity, and optimal engagements"
 
 ---
 
 ## Phase 3 — External integrations (2–3 days, can parallelize)
 
-The JD lists specific integration categories. Build one shallow connector per category to demonstrate the architectural pattern, plus one *real* integration (GitHub) that's both differentiated and called out by name.
+AI sales role descriptions list specific integration categories. Build one shallow connector per category to demonstrate the architectural pattern, plus one *real* integration (GitHub) that's both differentiated and called out by name.
 
 ### 3A. Connector layer (half day)
 
@@ -308,14 +308,15 @@ This interface lets the inbound webhook and connector polling share the same dow
 - Maps each event to a `SignalPayload` with `source: 'github_event'`, snippet = the GitHub event body, source_url = the GitHub URL.
 - Configurable watch list in `data/github-watch.md`:
   ```
-  - org: anthropic-experimental
+  - repo: modelcontextprotocol/servers
     signals: [stars, issue_create]
+    classification: prospect
   - repo: openai/openai-cookbook
     signals: [pr_merge_by_external]
     classification: competitor
   ```
 
-This single connector accomplishes three things at once: (1) demonstrates real API integration, (2) hits the JD's specific GitHub callout, (3) generates real signal data for the demo without needing fake fixtures.
+This single connector accomplishes three things at once: (1) demonstrates real API integration, (2) hits the specific GitHub integration callout, (3) generates real signal data for the demo without needing fake fixtures.
 
 ### 3C. Salesforce/HubSpot stub (half day)
 
@@ -340,14 +341,14 @@ This single connector accomplishes three things at once: (1) demonstrates real A
 ### Artifact
 A pluggable connector layer with one real integration (GitHub) and three stubbed (Salesforce, HubSpot, Outreach), demonstrating the architectural pattern for any source.
 
-### JD bullets satisfied
+### Role bullets satisfied
 - "Strong technical proficiency with APIs and experience integrating lead sources, **Github**, CRM systems, sales engagement platforms, and marketing automation tools"
 
 ---
 
 ## Phase 4 — Engagement loop (2 days)
 
-The JD specifically calls out "leverage conversational intelligence and email engagement data to identify high-performing prospecting patterns and surface best practices." Close the loop.
+Many AI sales role descriptions call out "leverage conversational intelligence and email engagement data to identify high-performing prospecting patterns and surface best practices." Close the loop.
 
 ### 4A. Engagement schema
 
@@ -391,9 +392,9 @@ Modify the drafter (`lib/drafter/draft.ts`) to:
 - The drafter changes its output when high-performing patterns are seeded into the prompt.
 
 ### Artifact
-A real feedback loop: touch → engagement → outcome → updated guidance → next touch. This is the "continuously improve" bullet in the JD, made literal.
+A real feedback loop: touch → engagement → outcome → updated guidance → next touch. This is the "continuously improve" bullet in the role requirements, made literal.
 
-### JD bullets satisfied
+### Role bullets satisfied
 - "Leverage conversational intelligence and email engagement data to identify high-performing prospecting patterns and surface best practices for personalization, messaging, and timing"
 - "Establish feedback loops that continuously improve lead quality scoring, routing accuracy, and the effectiveness of prospecting tools"
 
@@ -425,18 +426,18 @@ If time permits. Doesn't add capability, but demonstrates production readiness.
 ### Artifact
 A team-ready posture without becoming a SaaS.
 
-### JD bullets satisfied
+### Role bullets satisfied
 - "Partner cross-functionally with Sales Operations, Sales Development Leadership, and Marketing to establish feedback loops"
 
 ---
 
-## Phase 6 — Closed-loop application (1 day)
+## Phase 6 — Closed-loop target application (1 day)
 
-The killer move. Use the tool you built to apply for the role.
+The killer move. Use the tool you built to apply for the specific AI sales role you care about next. The plan is target-company agnostic: set `TARGET_COMPANY` and `TARGET_DOMAIN` for Anthropic, OpenAI, Harvey, Clay, Cursor, or any other role.
 
 ### Sequence
 
-1. **Research Anthropic.** Run `research-account` against `anthropic.com`. Let the auto-research populate evidence.
+1. **Research the target company.** Run `research-account` against `$TARGET_DOMAIN`. Let the auto-research populate evidence.
 2. **Audit.** Run `audit-extraction` over the pending rows. Manually accept/reject so the evidence pack is clean.
 3. **Add the hiring manager as a contact** with `archetype: 'leader'` (or `'enabler'` if it's an SDR ops manager). Use LinkedIn + the job posting page as evidence.
 4. **Generate signals against your own pipeline.** Post a `form_fill` signal representing the application submission. Watch the score, the tier, the routing assignment, and the alert fire — all on yourself.
@@ -466,7 +467,7 @@ The killer move. Use the tool you built to apply for the role.
 ### Artifact
 A self-referential proof: the tool that the role exists to build is the tool that's applying for the role. Closed loop.
 
-### JD bullets satisfied
+### Role bullets satisfied
 - "Experience in sales and/or sales development roles is highly valued" — you literally are the SDR for this application.
 
 ---
@@ -499,7 +500,7 @@ By the end:
 
 1. **A working v2 codebase** that ingests signals from 4 source types (one real, three stubbed), scores accounts with auditable rationale, routes to owners by configurable rules, alerts on tier transitions, learns from engagement outcomes, and drafts evidence-grounded outreach.
 
-2. **A 1500-word architecture essay** that explains every non-obvious design decision and maps cleanly onto the JD.
+2. **A 1500-word architecture essay** that explains every non-obvious design decision and maps cleanly onto AI sales role requirements.
 
 3. **A 5-minute Loom** of the closed-loop demo.
 
