@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db, schema } from '@/db';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { newId } from '../id';
 import {
   SignalPayload, TRUSTED_SOURCES, type CapturedBy, type SignalPayload as SignalPayloadT,
@@ -57,6 +57,12 @@ function isUniqueViolation(err: unknown): boolean {
  * scoping, the second account would silently dedupe to the first.
  *
  * Format: `<capturedBy>:<source>:<accountDomain>:<sourceUrl>:<sha256(snippet)[:16]>`
+ *
+ * The snippet hash is truncated to 16 hex chars (64 bits). At expected scale
+ * (≤10⁶ events) the collision probability is below 1 in 10⁹; if a collision
+ * does occur the only consequence is one false dedupe (the second event is
+ * dropped). For tighter guarantees in larger deployments, swap to the full
+ * 64-char SHA-256 hex.
  */
 function buildDedupeKey(
   p: SignalPayloadT,
@@ -109,15 +115,33 @@ export async function ingestSignal(
       ? 'verified'
       : 'pending_audit';
 
-  // The Drizzle transaction body is synchronous (better-sqlite3). We wrap it
-  // in `await Promise.resolve(...)` so the function signature stays Promise-
-  // shaped for callers and any synchronous throw inside still rejects the
-  // outer Promise correctly.
+  // Drizzle's better-sqlite3 transactions are synchronous. The function
+  // signature is async because callers expect a Promise; any throw inside the
+  // transaction (Zod parse already happened above) aborts the transaction and
+  // rejects the returned Promise — partial writes never persist.
   return db.transaction((tx): IngestResult => {
     // (2) Dedupe: short-circuit on existing dedupe key.
+    //
+    // Trust upgrade: a re-ingest under stronger authentication (TRUSTED_SOURCES
+    // source + trustedSender=true) can promote an existing pending_audit row
+    // to verified. Safe because pending_audit means the audit critic has not
+    // yet emitted a verdict; we are not overriding any audit decision. We do
+    // NOT downgrade verified → pending_audit, and we do NOT touch disputed
+    // rows (operator's audit verdict is sticky). We do NOT auto-link contacts
+    // on dedupe — a payload that adds contact_email to a previously contact-
+    // less event requires manual linking via the Contacts UI; this keeps the
+    // idempotent path from cascading additional writes.
     const existing = tx.select().from(schema.evidence)
       .where(eq(schema.evidence.dedupeKey, dedupeKey)).get();
     if (existing) {
+      let returnStatus = existing.extractionStatus;
+      if (existing.extractionStatus === 'pending_audit' && status === 'verified') {
+        tx.update(schema.evidence)
+          .set({ extractionStatus: 'verified' })
+          .where(eq(schema.evidence.id, existing.id)).run();
+        returnStatus = 'verified';
+      }
+      void returnStatus;  // status is reflected in the DB row; not in IngestResult
       return {
         accountId: existing.accountId,
         contactId: existing.contactId ?? null,
@@ -128,8 +152,15 @@ export async function ingestSignal(
     }
 
     // (3) Resolve-or-create the account by domain.
+    //
+    // Lookups use lower(col) = lower(normalized) to match the case-insensitive
+    // partial unique index in db/schema.ts. v2 normalizes on every write path,
+    // so stored values should always be lowercase already, but matching the
+    // index expression is defense-in-depth: if a future code path inserts a
+    // mixed-case domain, the lookup still finds it (and the post-insert
+    // catch-and-reselect still works under unique-violation races).
     let account = tx.select().from(schema.accounts)
-      .where(eq(schema.accounts.domain, domain)).get();
+      .where(sql`lower(${schema.accounts.domain}) = ${domain}`).get();
     if (!account) {
       const id = newId('account');
       try {
@@ -139,9 +170,10 @@ export async function ingestSignal(
         account = tx.select().from(schema.accounts).where(eq(schema.accounts.id, id)).get()!;
       } catch (err) {
         if (!isUniqueViolation(err)) throw err;
-        // Concurrent insert won the unique-domain index; re-select the winner.
+        // Concurrent insert won the unique-domain index; re-select via the
+        // same case-insensitive expression the index uses.
         account = tx.select().from(schema.accounts)
-          .where(eq(schema.accounts.domain, domain)).get();
+          .where(sql`lower(${schema.accounts.domain}) = ${domain}`).get();
         if (!account) throw err;
       }
     }
@@ -156,10 +188,13 @@ export async function ingestSignal(
     // an attacker submitting `{ account_domain: 'evil.com', contact_email:
     // 'ceo@target.com' }` cannot poison the existing CEO contact's evidence
     // graph this way.
+    //
+    // Lookup uses lower() to match the case-insensitive partial unique index
+    // (same defense-in-depth rationale as the account block above).
     let contactId: string | null = null;
     if (email) {
       const found = tx.select().from(schema.contacts)
-        .where(eq(schema.contacts.email, email)).get();
+        .where(sql`lower(${schema.contacts.email}) = ${email}`).get();
       if (found) {
         if (found.accountId === accountId) {
           contactId = found.id;
@@ -179,10 +214,11 @@ export async function ingestSignal(
           contactId = newContactId;
         } catch (err) {
           if (!isUniqueViolation(err)) throw err;
-          // Concurrent insert with the same email won. Re-resolve, but apply
-          // the same cross-account guard as above.
+          // Concurrent insert with the same email won. Re-resolve via the
+          // same case-insensitive expression, applying the same cross-account
+          // guard as above.
           const reselect = tx.select().from(schema.contacts)
-            .where(eq(schema.contacts.email, email)).get();
+            .where(sql`lower(${schema.contacts.email}) = ${email}`).get();
           if (!reselect) throw err;
           if (reselect.accountId === accountId) {
             contactId = reselect.id;

@@ -616,4 +616,74 @@ describe('ingestSignal', () => {
     expect(db.select().from(s.accounts).all()).toHaveLength(0);
     expect(db.select().from(s.evidence).all()).toHaveLength(0);
   });
+
+  // ---- dedupe upgrade behavior --------------------------------------------
+
+  it('upgrades pending_audit → verified on re-ingest with stronger authentication', async () => {
+    // Codex round 1 BLOCKER: an unauthenticated webhook hit followed by an
+    // authenticated retry would silently keep the row at pending_audit. The
+    // dedupe path now upgrades the existing row's status when the new call
+    // would yield 'verified'.
+    const payload = basePayload();  // intent_data, in TRUSTED_SOURCES
+    const a = await ingestSignal(payload);  // unauthenticated → pending_audit
+    expect(db.select().from(s.evidence).where(eq(s.evidence.id, a.evidenceId)).get()?.extractionStatus)
+      .toBe('pending_audit');
+    const b = await ingestSignal(payload, { trustedSender: true });
+    expect(b.evidenceId).toBe(a.evidenceId);
+    expect(b.deduped).toBe(true);
+    expect(db.select().from(s.evidence).where(eq(s.evidence.id, a.evidenceId)).get()?.extractionStatus)
+      .toBe('verified');
+  });
+
+  it('does NOT downgrade a verified row when re-ingested without trustedSender', async () => {
+    const payload = basePayload();
+    const a = await ingestSignal(payload, { trustedSender: true });
+    expect(db.select().from(s.evidence).where(eq(s.evidence.id, a.evidenceId)).get()?.extractionStatus)
+      .toBe('verified');
+    await ingestSignal(payload);  // unauthenticated retry
+    expect(db.select().from(s.evidence).where(eq(s.evidence.id, a.evidenceId)).get()?.extractionStatus)
+      .toBe('verified');  // unchanged
+  });
+
+  it('does NOT touch a disputed row on re-ingest (audit verdict is sticky)', async () => {
+    const payload = basePayload();
+    const a = await ingestSignal(payload);
+    // Simulate the audit critic marking it disputed.
+    db.update(s.evidence).set({ extractionStatus: 'disputed' })
+      .where(eq(s.evidence.id, a.evidenceId)).run();
+    // Re-ingest with trustedSender — must NOT promote disputed → verified.
+    await ingestSignal(payload, { trustedSender: true });
+    expect(db.select().from(s.evidence).where(eq(s.evidence.id, a.evidenceId)).get()?.extractionStatus)
+      .toBe('disputed');
+  });
+
+  // ---- case-insensitive resolution (defense in depth) ---------------------
+
+  it('resolves a pre-existing mixed-case domain via lower() lookup', async () => {
+    // A future code path that bypasses normalization could insert a mixed-case
+    // domain. The case-insensitive index allows it; ingest's lower() lookup
+    // must find it without falling through to a unique-violating insert.
+    db.insert(s.accounts).values({
+      id: 'acc_mixed', name: 'Acme', domain: 'Acme.COM',
+    }).run();
+    const result = await ingestSignal(basePayload({ account_domain: 'acme.com' }));
+    expect(result.accountId).toBe('acc_mixed');
+    expect(db.select().from(s.accounts).all()).toHaveLength(1);
+  });
+
+  it('resolves a pre-existing mixed-case email via lower() lookup', async () => {
+    db.insert(s.accounts).values({ id: 'acc_1', name: 'Acme', domain: 'acme.com' }).run();
+    db.insert(s.contacts).values({
+      id: 'ct_mixed', accountId: 'acc_1',
+      fullName: 'Jane', email: 'JANE@Acme.COM',
+    }).run();
+    const result = await ingestSignal(basePayload({
+      source: 'form_fill', signal_type: 'engagement',
+      account_domain: 'acme.com', contact_email: 'jane@acme.com',
+      snippet: 'jane@acme.com filled form',
+      source_url: 'https://acme.com/contact',
+    }));
+    expect(result.contactId).toBe('ct_mixed');
+    expect(db.select().from(s.contacts).all()).toHaveLength(1);
+  });
 });
