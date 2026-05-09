@@ -1,6 +1,24 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { eq } from 'drizzle-orm';
 import { SignalPayload, SIGNAL_SOURCE, SIGNAL_TYPE, CAPTURED_BY, TRUSTED_SOURCES } from '../../lib/signals/types';
 import * as schema from '../../db/schema';
+
+// In-memory DB mock for ingestSignal tests. The schema/contract tests above
+// don't import from '@/db', so this mock only affects the ingestSignal block.
+vi.mock('@/db', async () => {
+  const { default: Database } = await import('better-sqlite3');
+  const { drizzle } = await import('drizzle-orm/better-sqlite3');
+  const { migrate } = await import('drizzle-orm/better-sqlite3/migrator');
+  const schemaMod = await import('../../db/schema');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const _dirname = path.dirname(fileURLToPath(import.meta.url));
+  const sqlite = new Database(':memory:');
+  sqlite.pragma('foreign_keys = ON');
+  const db = drizzle(sqlite, { schema: schemaMod });
+  migrate(db, { migrationsFolder: path.resolve(_dirname, '../../db/migrations') });
+  return { db, schema: schemaMod };
+});
 
 // Convenience: a valid base payload with non-connector-only source so tests
 // can mutate one field at a time without tripping the source/producer matrix.
@@ -324,5 +342,278 @@ describe('Schema enum drift guards (signals vs db/schema.ts:evidence)', () => {
     const schemaSignalTypesMinusNone = evidenceSignalTypeEnum.filter((v) => v !== 'none').sort();
     const signalTypeSorted = [...SIGNAL_TYPE].sort();
     expect(schemaSignalTypesMinusNone).toEqual(signalTypeSorted);
+  });
+});
+
+// =============================================================================
+// ingestSignal — the actual function. Uses the in-memory DB mock above.
+// =============================================================================
+
+describe('ingestSignal', () => {
+  // Lazy import inside beforeEach so the mocked '@/db' is in place.
+  let ingestSignal: typeof import('../../lib/signals/ingest').ingestSignal;
+  let db: typeof import('@/db').db;
+  let s: typeof schema;
+
+  beforeEach(async () => {
+    const ingestMod = await import('../../lib/signals/ingest');
+    ingestSignal = ingestMod.ingestSignal;
+    const dbMod = await import('@/db');
+    db = dbMod.db;
+    s = dbMod.schema;
+    db.delete(s.evidence).run();
+    db.delete(s.contacts).run();
+    db.delete(s.accounts).run();
+  });
+
+  function basePayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      source: 'intent_data',
+      account_domain: 'newco.io',
+      signal_type: 'intent',
+      fact: 'spike in vector-db keywords',
+      source_url: 'https://bombora.example/x',
+      snippet: 'Surge: vector database, weekly score 87',
+      captured_at: '2026-05-06T12:00:00.000Z',
+      ...overrides,
+    };
+  }
+
+  // ---- account/contact resolution -----------------------------------------
+
+  it('creates a new account when account_domain is unknown', async () => {
+    const result = await ingestSignal(basePayload());
+    expect(result.accountId).toMatch(/^acc_/);
+    expect(result.evidenceId).toMatch(/^ev_/);
+    const accounts = db.select().from(s.accounts).all();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0].domain).toBe('newco.io');
+    expect(result.deduped).toBe(false);
+  });
+
+  it('reuses existing account by domain (no duplicate account)', async () => {
+    // Pre-existing account
+    db.insert(s.accounts).values({
+      id: 'acc_existing', name: 'Acme', domain: 'acme.com',
+    }).run();
+    await ingestSignal(basePayload({
+      account_domain: 'acme.com', source: 'web_traffic', signal_type: 'engagement',
+      snippet: 'visit_id=abc, page=/pricing',
+    }));
+    const accounts = db.select().from(s.accounts).all();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0].id).toBe('acc_existing');
+  });
+
+  it('normalizes domain casing to lowercase before storage and resolution', async () => {
+    // First call with mixed case
+    const a = await ingestSignal(basePayload({ account_domain: 'NewCo.IO' }));
+    // Second call with lower case — must resolve to same account
+    const b = await ingestSignal(basePayload({
+      account_domain: 'newco.io',
+      source: 'web_traffic', signal_type: 'engagement',
+      snippet: 'different snippet to avoid dedupe',
+    }));
+    expect(a.accountId).toBe(b.accountId);
+    const accounts = db.select().from(s.accounts).all();
+    expect(accounts).toHaveLength(1);
+    expect(accounts[0].domain).toBe('newco.io');  // stored lowercased
+  });
+
+  it('resolves contact by email when email exists under same account', async () => {
+    // Pre-existing account + contact with email
+    db.insert(s.accounts).values({ id: 'acc_existing', name: 'Acme', domain: 'acme.com' }).run();
+    db.insert(s.contacts).values({
+      id: 'ct_existing', accountId: 'acc_existing',
+      fullName: 'Jane Doe', email: 'jane@acme.com',
+    }).run();
+    const result = await ingestSignal(basePayload({
+      source: 'form_fill', signal_type: 'engagement',
+      account_domain: 'acme.com', contact_email: 'jane@acme.com',
+      snippet: 'jane@acme.com submitted demo-request',
+      source_url: 'https://acme.com/contact',
+    }));
+    expect(result.contactId).toBe('ct_existing');
+    const contacts = db.select().from(s.contacts).all();
+    expect(contacts).toHaveLength(1);  // no duplicate
+  });
+
+  it('creates a new contact when email is unknown under any account', async () => {
+    const result = await ingestSignal(basePayload({
+      source: 'form_fill', signal_type: 'engagement',
+      account_domain: 'newco.io', contact_email: 'jane@newco.io',
+      snippet: 'jane@newco.io submitted demo-request',
+      source_url: 'https://newco.io/contact',
+    }));
+    expect(result.contactId).toMatch(/^ct_/);
+    const contacts = db.select().from(s.contacts).all();
+    expect(contacts).toHaveLength(1);
+    expect(contacts[0].email).toBe('jane@newco.io');
+  });
+
+  it('SECURITY: leaves evidence.contactId NULL when email belongs to a different account', async () => {
+    // Pre-existing: jane@target.com under target.com
+    db.insert(s.accounts).values({ id: 'acc_target', name: 'Target', domain: 'target.com' }).run();
+    db.insert(s.contacts).values({
+      id: 'ct_target_jane', accountId: 'acc_target',
+      fullName: 'Jane Target', email: 'jane@target.com',
+    }).run();
+
+    // Attacker submits a signal claiming jane@target.com under evil.com
+    const result = await ingestSignal(basePayload({
+      source: 'form_fill', signal_type: 'engagement',
+      account_domain: 'evil.com', contact_email: 'jane@target.com',
+      snippet: 'jane@target.com filled form on evil.com',
+      source_url: 'https://evil.com/form',
+    }));
+
+    // The new account is created for evil.com
+    const acc = db.select().from(s.accounts).all();
+    expect(acc).toHaveLength(2);
+    expect(acc.find((a) => a.domain === 'evil.com')).toBeDefined();
+
+    // But the evidence is NOT linked to the existing target.com contact —
+    // contactId is null. Cross-account contact poisoning is blocked.
+    expect(result.contactId).toBeNull();
+    const ev = db.select().from(s.evidence).where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(ev?.contactId).toBeNull();
+
+    // No new contact was created either (would have hit unique email index).
+    expect(db.select().from(s.contacts).all()).toHaveLength(1);
+  });
+
+  it('normalizes email casing to lowercase before storage', async () => {
+    // Note: Zod's .email() validator rejects leading/trailing whitespace at
+    // parse time, so ingest never sees a raw '  jane@x.com  '. Casing is the
+    // only normalization ingest needs to perform — RFC 5321 says local-parts
+    // are case-sensitive but in practice mailbox lookups treat them
+    // case-insensitively, and the unique-email index relies on lowercased
+    // storage to do its job.
+    const result = await ingestSignal(basePayload({
+      source: 'form_fill', signal_type: 'engagement',
+      account_domain: 'acme.com', contact_email: 'Jane@ACME.COM',
+      snippet: 'demo request',
+      source_url: 'https://acme.com/contact',
+    }));
+    const contact = db.select().from(s.contacts).where(eq(s.contacts.id, result.contactId!)).get();
+    expect(contact?.email).toBe('jane@acme.com');
+  });
+
+  // ---- trust model ---------------------------------------------------------
+
+  it('marks trusted-source + authenticated-sender signals as verified', async () => {
+    const result = await ingestSignal(basePayload(), { trustedSender: true });
+    const ev = db.select().from(s.evidence).where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(ev?.extractionStatus).toBe('verified');
+  });
+
+  it('keeps trusted-source signals as pending_audit when sender is not authenticated', async () => {
+    const result = await ingestSignal(basePayload());  // no trustedSender
+    const ev = db.select().from(s.evidence).where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(ev?.extractionStatus).toBe('pending_audit');
+  });
+
+  it('marks untrusted-source signals as pending_audit even when authenticated', async () => {
+    const result = await ingestSignal(basePayload({
+      source: 'social_post', signal_type: 'trigger_event',
+    }), { trustedSender: true });
+    const ev = db.select().from(s.evidence).where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(ev?.extractionStatus).toBe('pending_audit');
+  });
+
+  // ---- provenance ----------------------------------------------------------
+
+  it('defaults capturedBy to "webhook" when not set', async () => {
+    const result = await ingestSignal(basePayload());
+    expect(result.capturedBy).toBe('webhook');
+    const ev = db.select().from(s.evidence).where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(ev?.capturedBy).toBe('webhook');
+  });
+
+  it('preserves connector provenance when captured_by is set', async () => {
+    const result = await ingestSignal(basePayload({
+      source: 'crm_record', signal_type: 'firmographic',
+      account_domain: 'acme.com',
+      source_url: 'https://salesforce.example/Contact/003xx',
+      snippet: 'Id=003xx Email=alice@acme.com',
+      captured_by: 'connector_salesforce',
+    }), { trustedSender: true });
+    const ev = db.select().from(s.evidence).where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(ev?.capturedBy).toBe('connector_salesforce');
+    expect(result.capturedBy).toBe('connector_salesforce');
+  });
+
+  // ---- idempotency ---------------------------------------------------------
+
+  it('is idempotent on duplicate payload (same dedupe key returns same evidenceId)', async () => {
+    const payload = basePayload({
+      source: 'form_fill', signal_type: 'engagement',
+      account_domain: 'acme.com',
+      source_url: 'https://acme.com/contact',
+      snippet: 'name=Jane,email=jane@acme.com,form=demo-request',
+    });
+    const a = await ingestSignal(payload);
+    const b = await ingestSignal(payload);
+    expect(a.evidenceId).toBe(b.evidenceId);
+    expect(b.deduped).toBe(true);
+    expect(db.select().from(s.evidence).all()).toHaveLength(1);
+  });
+
+  it('produces SEPARATE evidence rows for the same snippet under different accounts (cross-account scoping)', async () => {
+    // Same snippet, source_url, capturedBy — but different account_domain.
+    // The dedupe key includes account_domain, so these must NOT collide.
+    const a = await ingestSignal(basePayload({
+      account_domain: 'acme.com',
+      source_url: 'https://shared-press-release.example/x',
+      snippet: 'Press release names Acme and Globex as customers',
+    }));
+    const b = await ingestSignal(basePayload({
+      account_domain: 'globex.com',
+      source_url: 'https://shared-press-release.example/x',
+      snippet: 'Press release names Acme and Globex as customers',
+    }));
+    expect(a.evidenceId).not.toBe(b.evidenceId);
+    expect(db.select().from(s.evidence).all()).toHaveLength(2);
+  });
+
+  it('handles concurrent duplicate calls without creating duplicates', async () => {
+    // Better-sqlite3 is single-writer; this validates the catch-and-reselect
+    // pattern handles JS-level concurrency races correctly.
+    const payload = basePayload({
+      source: 'form_fill', signal_type: 'engagement',
+      account_domain: 'race.com',
+      contact_email: 'duplicate@race.com',
+      source_url: 'https://race.com/x',
+      snippet: 'race-snippet',
+    });
+    const [a, b, c] = await Promise.all([
+      ingestSignal(payload),
+      ingestSignal(payload),
+      ingestSignal(payload),
+    ]);
+    expect(new Set([a.evidenceId, b.evidenceId, c.evidenceId]).size).toBe(1);
+    expect(db.select().from(s.accounts).all()).toHaveLength(1);
+    expect(db.select().from(s.contacts).all()).toHaveLength(1);
+    expect(db.select().from(s.evidence).all()).toHaveLength(1);
+  });
+
+  // ---- atomicity / contract enforcement -----------------------------------
+
+  it('rejects a Zod-invalid payload without writing any rows', async () => {
+    await expect(
+      ingestSignal({ source: 'tarot_reading', account_domain: 'foo' } as any)
+    ).rejects.toThrow();
+    expect(db.select().from(s.accounts).all()).toHaveLength(0);
+    expect(db.select().from(s.contacts).all()).toHaveLength(0);
+    expect(db.select().from(s.evidence).all()).toHaveLength(0);
+  });
+
+  it('rejects a payload that would skip the source/captured_by matrix without writing rows', async () => {
+    // Webhook caller trying to claim connector_salesforce on intent_data.
+    await expect(
+      ingestSignal(basePayload({ captured_by: 'connector_salesforce' }), { trustedSender: true })
+    ).rejects.toThrow();
+    expect(db.select().from(s.accounts).all()).toHaveLength(0);
+    expect(db.select().from(s.evidence).all()).toHaveLength(0);
   });
 });
