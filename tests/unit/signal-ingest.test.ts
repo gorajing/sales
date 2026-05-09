@@ -659,6 +659,15 @@ describe('ingestSignal', () => {
 
   // ---- case-insensitive resolution (defense in depth) ---------------------
 
+  // Coverage note: the post-insert catch-and-reselect branches in ingestSignal
+  // are reachable only under true write-side concurrency between two
+  // transactions. With one in-memory better-sqlite3 connection and synchronous
+  // Drizzle transactions, those races cannot be deterministically reproduced
+  // without test-only seams in production code or fragile internal-API spies.
+  // The branches are short, structurally mirror the SELECT path, and apply the
+  // same trust-upgrade helper (maybeUpgradeTrust) — verified by inspection
+  // rather than execution. Any future refactor should preserve that mirror.
+
   it('resolves a pre-existing mixed-case domain via lower() lookup', async () => {
     // A future code path that bypasses normalization could insert a mixed-case
     // domain. The case-insensitive index allows it; ingest's lower() lookup

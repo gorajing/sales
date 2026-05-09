@@ -134,14 +134,7 @@ export async function ingestSignal(
     const existing = tx.select().from(schema.evidence)
       .where(eq(schema.evidence.dedupeKey, dedupeKey)).get();
     if (existing) {
-      let returnStatus = existing.extractionStatus;
-      if (existing.extractionStatus === 'pending_audit' && status === 'verified') {
-        tx.update(schema.evidence)
-          .set({ extractionStatus: 'verified' })
-          .where(eq(schema.evidence.id, existing.id)).run();
-        returnStatus = 'verified';
-      }
-      void returnStatus;  // status is reflected in the DB row; not in IngestResult
+      maybeUpgradeTrust(tx, existing, status);
       return {
         accountId: existing.accountId,
         contactId: existing.contactId ?? null,
@@ -252,6 +245,11 @@ export async function ingestSignal(
       const winner = tx.select().from(schema.evidence)
         .where(eq(schema.evidence.dedupeKey, dedupeKey)).get();
       if (!winner) throw err;
+      // Apply the same trust-upgrade as the dedupe-SELECT path (step 2). If
+      // the unauthenticated call won the insert race and a trusted call lost
+      // here, the existing pending_audit row should still be promoted to
+      // verified — anything else silently preempts trust upgrades.
+      maybeUpgradeTrust(tx, winner, status);
       return {
         accountId: winner.accountId,
         contactId: winner.contactId ?? null,
@@ -261,4 +259,25 @@ export async function ingestSignal(
       };
     }
   });
+}
+
+/**
+ * Promote a dedupe-matched evidence row from pending_audit to verified when
+ * the new ingest call would yield verified. Called from BOTH the dedupe-
+ * SELECT path and the insert-race catch path so the upgrade is consistent
+ * regardless of which path triggers the dedupe.
+ *
+ * Does not downgrade verified → pending_audit, and does not touch disputed
+ * (operator/audit-critic verdicts are sticky).
+ */
+function maybeUpgradeTrust(
+  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  existing: typeof schema.evidence.$inferSelect,
+  newStatus: 'verified' | 'pending_audit',
+): void {
+  if (existing.extractionStatus === 'pending_audit' && newStatus === 'verified') {
+    tx.update(schema.evidence)
+      .set({ extractionStatus: 'verified' })
+      .where(eq(schema.evidence.id, existing.id)).run();
+  }
 }
