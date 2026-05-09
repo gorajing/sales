@@ -60,6 +60,49 @@ function timingSafeStringEqual(a: string, b: string): boolean {
   return timingSafeEqual(ah, bh);
 }
 
+/**
+ * Read up to `maxBytes` from the request body, bailing on the first chunk
+ * that crosses the cap. Caps peak allocation at roughly (maxBytes + one
+ * chunk) regardless of whether Content-Length is present or honest — a
+ * stronger DoS guarantee than buffering the whole body and checking after.
+ */
+async function readBoundedBody(
+  req: Request,
+  maxBytes: number,
+): Promise<{ ok: true; text: string } | { ok: false; reason: 'too_large' | 'read_error' }> {
+  const reader = req.body?.getReader();
+  if (!reader) return { ok: true, text: '' };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false, reason: 'too_large' };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { ok: false, reason: 'read_error' };
+  }
+  return { ok: true, text: Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8') };
+}
+
+/**
+ * Parse the Content-Type media type. Returns the lowercased type/subtype
+ * before any `;` parameters, or `null` if no Content-Type was sent.
+ *
+ * Strict exact-match prevents `text/plain; application/json` (which a
+ * malicious sender could craft) from passing a permissive `.includes()`.
+ */
+function parseMediaType(header: string | null): string | null {
+  if (header === null) return null;
+  return header.split(';')[0].trim().toLowerCase();
+}
+
 export async function POST(req: Request) {
   // (1) Production-config guard.
   const expectedSecret = process.env.SIGNAL_WEBHOOK_SECRET;
@@ -91,8 +134,8 @@ export async function POST(req: Request) {
   // 'verified' without auth.
 
   // (3) Content-Type and Content-Length pre-checks.
-  const contentType = req.headers.get('content-type');
-  if (contentType && !contentType.toLowerCase().includes('application/json')) {
+  const mediaType = parseMediaType(req.headers.get('content-type'));
+  if (mediaType !== null && mediaType !== 'application/json') {
     return NextResponse.json(
       { error: 'unsupported_media_type', detail: 'expected application/json' },
       { status: 415 },
@@ -109,23 +152,22 @@ export async function POST(req: Request) {
     }
   }
 
-  // (4) Read body as text first so we can apply the size cap even when the
-  // sender omits/lies about Content-Length, then JSON.parse.
-  let raw: string;
-  try {
-    raw = await req.text();
-  } catch {
+  // (4) Stream-bounded body read: bail on the first chunk that crosses the
+  // cap so peak allocation is bounded even when Content-Length is missing
+  // or lies. THEN JSON.parse.
+  const readResult = await readBoundedBody(req, MAX_BODY_BYTES);
+  if (!readResult.ok) {
+    if (readResult.reason === 'too_large') {
+      return NextResponse.json(
+        { error: 'payload_too_large', detail: `body exceeds ${MAX_BODY_BYTES} bytes` },
+        { status: 413 },
+      );
+    }
     return NextResponse.json({ error: 'invalid_body' }, { status: 400 });
-  }
-  if (Buffer.byteLength(raw, 'utf8') > MAX_BODY_BYTES) {
-    return NextResponse.json(
-      { error: 'payload_too_large', detail: `body exceeds ${MAX_BODY_BYTES} bytes` },
-      { status: 413 },
-    );
   }
   let body: unknown;
   try {
-    body = JSON.parse(raw);
+    body = JSON.parse(readResult.text);
   } catch {
     return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
   }
@@ -145,9 +187,12 @@ export async function POST(req: Request) {
     );
   }
 
-  // (6) Ingest. Zod errors → 400 with sanitized issue list (no echo of user
-  // input via .received). Other errors → 500 with generic detail; the raw
-  // error is logged server-side for operators.
+  // (6) Ingest. Zod errors → 400 with { path, code } only — no .received
+  // (user values) and no .message (which echoes user-controlled key names
+  // for `unrecognized_keys`). Clients can map codes to user-facing messages.
+  // Other errors → 500 with generic { error: 'internal' }; raw err is
+  // logged server-side via console.error so operators can debug without
+  // the response body becoming a reflection oracle.
   try {
     const result = await ingestSignal(body, { trustedSender });
     return NextResponse.json(result, { status: 200 });
@@ -155,7 +200,7 @@ export async function POST(req: Request) {
     if (err instanceof ZodError) {
       const issues = err.issues.map((i) => ({
         path: i.path.join('.'),
-        message: i.message,
+        code: i.code,
       }));
       return NextResponse.json(
         { error: 'invalid_payload', issues },

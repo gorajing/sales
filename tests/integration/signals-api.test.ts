@@ -393,17 +393,7 @@ describe('POST /api/signals — operational hardening', () => {
     expect(res.status).toBe(401);
   });
 
-  it('500 response does not echo internal error messages', async () => {
-    // Force a non-Zod error path. The simplest reproducible case: temporarily
-    // monkey-patch ingestSignal via dynamic import to throw a synthetic Error
-    // whose message would normally leak into the response. Skipped here in
-    // favor of structural assertion: every 500 response uses the
-    // `{ error: 'internal' }` shape with no `detail` or `message` field.
-    // Documented; behavior is enforced by the route source.
-    expect(true).toBe(true);
-  });
-
-  it('400 invalid_payload response only includes path + message, not echoed input', async () => {
+  it('400 invalid_payload response includes path + code, NEVER user-echoed fields', async () => {
     delete process.env.SIGNAL_WEBHOOK_SECRET;
     const res = await POST(postReq(basePayload({ source: 'tarot_reading' })));
     expect(res.status).toBe(400);
@@ -412,10 +402,51 @@ describe('POST /api/signals — operational hardening', () => {
     expect(Array.isArray(body.issues)).toBe(true);
     for (const issue of body.issues) {
       expect(typeof issue.path).toBe('string');
-      expect(typeof issue.message).toBe('string');
-      // Critical: no .received field that could echo back user input.
+      expect(typeof issue.code).toBe('string');
+      // Critical: no fields that echo back user input.
+      // .received echoes the rejected value; .message can echo bad key names
+      // for unrecognized_keys ('Unrecognized key: "user_supplied_key"').
       expect('received' in issue).toBe(false);
       expect('input' in issue).toBe(false);
+      expect('message' in issue).toBe(false);
     }
+  });
+
+  it('400 invalid_payload does not echo unrecognized key names from .strict()', async () => {
+    // The classic reflection oracle: send an unknown field with a
+    // suspicious name and confirm the route does not bounce it back.
+    delete process.env.SIGNAL_WEBHOOK_SECRET;
+    const res = await POST(postReq({
+      ...basePayload(),
+      attacker_supplied_key_name: 'leak-me-back',
+    }));
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(text).not.toContain('attacker_supplied_key_name');
+    expect(text).not.toContain('leak-me-back');
+  });
+
+  it('rejects content-type that smuggles application/json after a primary type', async () => {
+    delete process.env.SIGNAL_WEBHOOK_SECRET;
+    // 'text/plain; application/json' — a permissive .includes() check would
+    // pass this; strict media-type parsing must not.
+    const res = await POST(postReq(basePayload(), {
+      'Content-Type': 'text/plain; application/json',
+    }));
+    expect(res.status).toBe(415);
+  });
+
+  it('streaming body cap: large payload is rejected before full buffer (413)', async () => {
+    delete process.env.SIGNAL_WEBHOOK_SECRET;
+    // 200KB body, no honest Content-Length declared. The streaming reader
+    // bails on the first chunk that crosses the 64KB cap.
+    const huge = 'x'.repeat(200_000);
+    const req = new Request('http://x/api/signals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' /* no content-length */ },
+      body: huge,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(413);
   });
 });
