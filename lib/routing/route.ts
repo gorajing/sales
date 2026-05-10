@@ -62,21 +62,25 @@ const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *      arbitrary scoreId belonging to a different account could otherwise
  *      cause an assignment for account A pointing at account B's score.
  *   4. Build the routing context from score.tier + account columns (size,
- *      industry). Walk rules in (priority ASC, id ASC) order — the sort is
- *      done by parseRoutingRules — and pick the first match. No match →
- *      fallback to the default email.
+ *      industry). Walk rules in (priority ASC, numeric id-suffix ASC)
+ *      order — the sort is done by parseRoutingRules — and pick the
+ *      first match. No match → fallback to the default email.
  *   5. Insert. Race on the unique (account, score, hash) index is caught
  *      and the existing row is returned, making route() idempotent.
  *
- * Idempotency behavior:
- *   - Calling route() twice with the same (accountId, scoreId, rulesMd,
- *     defaultOwnerEmail): second call returns the existing assignment.
- *   - Calling route() with the same scoreId but edited rulesMd OR a
- *     changed defaultOwnerEmail: NEW hash → NEW assignment. Both rows
- *     survive (the unique index includes the hash). Folding the default
- *     into the hash is intentional — it ensures that changing
- *     DEFAULT_OWNER_EMAIL propagates to existing fallback assignments
- *     on the next recompute instead of being silently sticky.
+ * Idempotency behavior (keyed on PARSED config, not raw text):
+ *   - Same (accountId, scoreId) + same parsed rule set + same normalized
+ *     default owner → second call returns the existing assignment.
+ *     Cosmetic edits to rulesMd (comments, whitespace, predicate-internal
+ *     spaces) and cosmetic edits to defaultOwnerEmail (case, leading/
+ *     trailing whitespace) DO NOT churn — the hash is computed from the
+ *     AST and the normalized default.
+ *   - Same scoreId but a semantic change to rulesMd OR a semantic change
+ *     to defaultOwnerEmail: NEW hash → NEW assignment. Both rows survive
+ *     (the unique index includes the hash). Folding the default into the
+ *     hash is intentional — it ensures that changing DEFAULT_OWNER_EMAIL
+ *     propagates to existing fallback assignments on the next recompute
+ *     instead of being silently sticky.
  *
  * Failure modes (all leave the DB unchanged):
  *   - RoutingRuleParseError: rules file malformed.

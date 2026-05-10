@@ -86,8 +86,11 @@ export type PredicateAst =
 export interface RoutingRule {
   id: string;            // `RR\d+`
   priority: number;      // non-negative integer
-  predicate: string;     // original source string (hashed for stability)
-  predicateAst: PredicateAst;  // parsed form (used by the engine)
+  /** Original source string, kept for human display (error messages,
+   *  future operator UI). NOT what gets hashed — the AST is hashed
+   *  instead so lexical noise doesn't churn assignments. */
+  predicate: string;
+  predicateAst: PredicateAst;  // parsed form — used by the engine and the hash
   ownerEmail: string;    // normalized: trimmed + lowercased
 }
 
