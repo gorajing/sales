@@ -92,6 +92,48 @@ this is a comment block
     warn.mockRestore();
   });
 
+  it('rejects fractional weight (5.5 must not silently parse as 5)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const md = `
+## R1 — Bad
+- predicate: \`source_type == 'a'\`
+- weight: 5.5
+- window_days: 7
+`;
+    const { rules } = parseScoringRules(md);
+    expect(rules).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('rejects window_days with trailing units (7 days must not silently parse as 7)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const md = `
+## R1 — Bad
+- predicate: \`source_type == 'a'\`
+- weight: 5
+- window_days: 7 days
+`;
+    const { rules } = parseScoringRules(md);
+    expect(rules).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('rejects window_days = 0 (would divide by zero in linearDecayWeight)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const md = `
+## R1 — Bad
+- predicate: \`source_type == 'a'\`
+- weight: 5
+- window_days: 0
+`;
+    const { rules } = parseScoringRules(md);
+    expect(rules).toHaveLength(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('returns the empty rule array when there are no rules', () => {
     const md = `## Tier thresholds\n- cold: 0–14\n- warm: 15–34\n- hot: 35–59\n- on_fire: 60+`;
     const { rules } = parseScoringRules(md);
@@ -150,6 +192,60 @@ describe('parseScoringRules — tier thresholds', () => {
     parseScoringRules(md);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('warns when threshold tiers overlap (warm starts before cold ends)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const md = `
+## Tier thresholds
+- cold: 0–20
+- warm: 15–34
+- hot: 35–59
+- on_fire: 60+
+`;
+    parseScoringRules(md);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('parses em-dash (—) thresholds specifically', () => {
+    const md = `
+## Tier thresholds
+- cold: 0—14
+- warm: 15—34
+- hot: 35—59
+- on_fire: 60+
+`;
+    const { thresholds } = parseScoringRules(md);
+    expect(thresholds.cold).toEqual([0, 14]);
+    expect(thresholds.warm).toEqual([15, 34]);
+  });
+
+  it('warns on a malformed individual tier line (unrecognized punctuation)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const md = `
+## Tier thresholds
+- cold: 0..14
+- warm: 15–34
+- hot: 35–59
+- on_fire: 60+
+`;
+    parseScoringRules(md);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('tolerates whitespace around the colon in tier lines', () => {
+    const md = `
+## Tier thresholds
+- cold : 0–14
+- warm  :  15–34
+- hot: 35–59
+- on_fire: 60+
+`;
+    const { thresholds } = parseScoringRules(md);
+    expect(thresholds.cold).toEqual([0, 14]);
+    expect(thresholds.warm).toEqual([15, 34]);
   });
 });
 
@@ -212,10 +308,26 @@ describe('evalPredicate — leaf operators', () => {
     expect(evalPredicate("snippet > 'b'", ev())).toBe(false);
   });
 
-  it('returns false on a malformed predicate without throwing', () => {
+  it('returns false on a malformed predicate without throwing, AND warns', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(evalPredicate('!!!', ev())).toBe(false);
     expect(evalPredicate('source_type ==', ev())).toBe(false);
+    // Operator gets a warning per malformed predicate so they see typos in stderr.
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns when a typo like HAS instead of CONTAINS is used (regression for silent-fail bug)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(evalPredicate("snippet HAS '/pricing'", ev())).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns when an unknown field is referenced', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(evalPredicate("nonexistent_field == 'x'", ev())).toBe(false);
+    expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
 });
@@ -278,6 +390,34 @@ describe('evalPredicate — combinators', () => {
       "source_type IN ['intent_data', 'crm_record'] AND signal_type == 'intent'",
       { sourceType: 'intent_data', signalType: 'intent', snippet: 'x', extractedFact: 'y' },
     )).toBe(true);
+  });
+
+  it('IN list correctly handles values containing commas (string-aware list splitter)', () => {
+    // The naive `m[2].split(',')` would break this. The new parseQuotedList
+    // walks the content extracting quoted literals one at a time, ignoring
+    // commas between or inside.
+    expect(evalPredicate(
+      "extracted_fact IN ['consumer goods, packaged', 'b2b']",
+      { sourceType: 'x', signalType: 'x', snippet: 'x',
+        extractedFact: 'consumer goods, packaged' },
+    )).toBe(true);
+    expect(evalPredicate(
+      "extracted_fact IN ['consumer goods, packaged', 'b2b']",
+      { sourceType: 'x', signalType: 'x', snippet: 'x',
+        extractedFact: 'consumer' },
+    )).toBe(false);
+  });
+
+  it('tolerates flexible whitespace around AND/OR (multi-space, tab, newline)', () => {
+    const e = { sourceType: 'a', signalType: 'b', snippet: 'x', extractedFact: 'y' };
+    // Multi-space
+    expect(evalPredicate("source_type == 'a'    AND    signal_type == 'b'", e)).toBe(true);
+    // Tab around AND
+    expect(evalPredicate("source_type == 'a'\tAND\tsignal_type == 'b'", e)).toBe(true);
+    // Newline around AND
+    expect(evalPredicate("source_type == 'a'\nAND\nsignal_type == 'b'", e)).toBe(true);
+    // Mixed
+    expect(evalPredicate("source_type == 'a' \n  AND \t  signal_type == 'b'", e)).toBe(true);
   });
 });
 

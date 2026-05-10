@@ -11,7 +11,8 @@ log warnings for predicates it cannot evaluate; check server logs after edits.
 
 - Fields: `source_type`, `signal_type`, `snippet`, `extracted_fact`, `confidence`
 - Ops: `==`, `!=`, `CONTAINS`, `IN ['a', 'b', ...]`
-- Combinators: `AND`, `OR` (left-to-right; `OR` has lower precedence than `AND`)
+- Combinators: `AND` (higher precedence), `OR` (lower precedence). So
+  `a OR b AND c` parses as `a OR (b AND c)`.
 - No parentheses; nested grouping not supported. Use multiple rules instead.
 - String literals are single-quoted. `AND`/`OR` inside quoted strings are
   treated as content, not combinators.
