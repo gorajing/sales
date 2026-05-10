@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const accounts = sqliteTable('accounts', {
@@ -82,7 +82,14 @@ export const evidence = sqliteTable('evidence', {
   // "<capturedBy>:<source>:<accountDomain>:<sourceUrl>:<sha256(snippet)>".
   // Unique when non-null; SQLite allows multiple NULLs by default.
   dedupeKey: text('dedupe_key').unique(),
-});
+}, (t) => ({
+  // computeScore filters on (accountId, extractionStatus='verified') for
+  // every recompute. With ~hundreds of evidence rows per account this is
+  // already a hot query path; the recompute API + inbound UI will hit it
+  // for every account on every refresh. Composite index keeps it cheap.
+  accountStatusIdx: index('evidence_account_status_idx')
+    .on(t.accountId, t.extractionStatus),
+}));
 
 export const sequences = sqliteTable('sequences', {
   id: text('id').primaryKey(),
@@ -194,7 +201,12 @@ export const leadScores = sqliteTable('lead_scores', {
   id: text('id').primaryKey(),
   accountId: text('account_id').notNull().references(() => accounts.id),
   contactId: text('contact_id').references(() => contacts.id),
-  score: integer('score').notNull(),  // 0–100, clamped
+  // Final integer score for the account at compute time. Clamped to
+  // ≤100 at the upper end; lower bound is NOT clamped — penalty rules
+  // (negative weights) can produce negative scores, which scoreToTier
+  // maps to 'cold'. UI/routing/alerts must handle negative-friendly
+  // display (don't render as a 0-100 progress bar).
+  score: integer('score').notNull(),
   tier: text('tier', { enum: ['cold', 'warm', 'hot', 'on_fire'] }).notNull(),
   rationaleJson: text('rationale_json', { mode: 'json' })
     .$type<Array<{ evidence_id: string; weight: number; reason: string; rule_id: string }>>()

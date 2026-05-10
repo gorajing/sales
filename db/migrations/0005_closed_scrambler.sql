@@ -1,0 +1,1 @@
+CREATE INDEX `evidence_account_status_idx` ON `evidence` (`account_id`,`extraction_status`);

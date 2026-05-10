@@ -36,6 +36,13 @@
       "when": 1778200701151,
       "tag": "0004_smooth_typhoid_mary",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1778376157457,
+      "tag": "0005_closed_scrambler",
+      "breakpoints": true
     }
   ]
 }

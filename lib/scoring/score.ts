@@ -39,35 +39,44 @@ export interface ScoreResult {
 const MAX_SCORE = 100;
 
 /**
- * Stable hash over score + tier + rationale identity + rules-MD hash.
+ * Stable hash over the *persisted semantics* of a score row.
  *
- * Two recomputes that produce the same score+tier from the same rationale
- * under the same rules MUST yield the same fingerprint — that's how
- * idempotency works (the leadScores table has a UNIQUE index on
- * (accountId, fingerprint), and we short-circuit when the latest row's
- * fingerprint matches the new one).
+ * Two recomputes that produce the same logical state — same rounded score,
+ * same tier, same set of (evidence_id, rule_id) matches, same parsed rules
+ * — must yield the same fingerprint. Idempotency relies on this: the
+ * leadScores table has a UNIQUE index on (accountId, fingerprint), and we
+ * short-circuit when the latest row's fingerprint matches the new one.
  *
- * Including the rules-MD hash means *any* rule edit (threshold, predicate,
- * weight, window) invalidates the fingerprint and forces a new insert and
- * downstream alert evaluation. Without that, a threshold-only edit would
- * leave the same fingerprint and silently suppress the promotion alert.
- *
- * Including `tier` lets the consumer rely on "fingerprint match → tier
- * unchanged" without recomputing tier separately.
+ * What's hashed (and why):
+ *   - **rounded score** (integer): captures the magnitude as it will be
+ *     stored. Fractional weights from time-decay are deliberately NOT in
+ *     the hash — they vary millisecond-to-millisecond with `now`, which
+ *     would defeat dedupe on every default-`now` call.
+ *   - **tier**: lets consumers rely on "fingerprint match → tier unchanged"
+ *     without recomputing.
+ *   - **sorted (evidence_id, rule_id) pairs**: captures *which* matches
+ *     produced the score, distinguishing e.g. "score 15 from one rule" from
+ *     "score 15 from three rules with offsetting weights."
+ *   - **parsed rules + thresholds hash**: any rule semantics change
+ *     (threshold edit, predicate edit, weight, window) invalidates. But
+ *     comment-only or whitespace-only edits to the markdown DON'T — the
+ *     hash is over the parsed object, not the raw file.
  */
 function fingerprint(
   score: number,
   tier: Tier,
   rationale: ScoreRationaleItem[],
-  rulesMd: string,
+  parsedRulesCanonical: string,
 ): string {
-  const norm = rationale
-    .map((r) => `${r.rule_id}:${r.evidence_id}:${r.weight}`)
+  // Pair-set captures matches without per-pair float weights (those vary
+  // with `now` and would prevent same-state dedupe across calls).
+  const pairs = rationale
+    .map((r) => `${r.rule_id}:${r.evidence_id}`)
     .sort()
     .join('|');
-  const rulesHash = createHash('sha256').update(rulesMd).digest('hex').slice(0, 16);
+  const rulesHash = createHash('sha256').update(parsedRulesCanonical).digest('hex').slice(0, 16);
   return createHash('sha256')
-    .update(`${score}::${tier}::${norm}::${rulesHash}`)
+    .update(`${score}::${tier}::${pairs}::${rulesHash}`)
     .digest('hex').slice(0, 16);
 }
 
@@ -138,17 +147,27 @@ export async function computeScore(
 
   // Clamp upper bound only. Negative scores from penalty rules are allowed
   // and map to `cold` via scoreToTier. Round at the very end so per-rule
-  // fractional precision survives until storage.
+  // fractional precision survives until storage. Tier is derived from the
+  // ROUNDED score so the displayed score and tier agree (an operator
+  // looking at "Score: 15" should see the tier consistent with 15, not
+  // some pre-rounded 14.6).
   const score = Math.round(Math.min(MAX_SCORE, total));
   const tier = scoreToTier(score, thresholds);
-  const fp = fingerprint(score, tier, rationale, rulesMd);
+  // Hash the parsed rules + thresholds (canonical form) instead of the raw
+  // markdown so comment-only / whitespace-only edits don't invalidate
+  // every account's fingerprint.
+  const parsedRulesCanonical = JSON.stringify({ rules, thresholds });
+  const fp = fingerprint(score, tier, rationale, parsedRulesCanonical);
 
   // Latest existing score for this account — used both for the prior-tier
   // report (so downstream alerts know what the tier transitioned from) and
-  // for the fingerprint short-circuit.
+  // for the fingerprint short-circuit. Order by (computedAt, id) DESC for
+  // a deterministic tie-break when two rows share a millisecond timestamp
+  // (possible with injected `now` in tests, or with real-clock collisions
+  // under high concurrency).
   const latest = db.select().from(schema.leadScores)
     .where(eq(schema.leadScores.accountId, accountId))
-    .orderBy(desc(schema.leadScores.computedAt))
+    .orderBy(desc(schema.leadScores.computedAt), desc(schema.leadScores.id))
     .limit(1).get();
 
   if (latest && latest.fingerprint === fp) {
@@ -186,6 +205,13 @@ export async function computeScore(
   } catch (err) {
     // Concurrent recompute: another caller wrote the same (account,
     // fingerprint) first. Re-select that row instead of inserting a duplicate.
+    //
+    // Coverage note: this branch is reachable only under true write-side
+    // concurrency between two transactions. With a single in-memory
+    // better-sqlite3 connection and synchronous Drizzle transactions, the
+    // race cannot be deterministically reproduced without test-only seams
+    // or fragile internal-API spies. The branch structurally mirrors the
+    // SELECT-hit path above and shares the same priorTier semantics.
     if (!isUniqueViolation(err)) throw err;
     const winner = db.select().from(schema.leadScores)
       .where(and(
@@ -198,7 +224,10 @@ export async function computeScore(
       accountId,
       score: winner.score,
       tier: winner.tier,
-      priorTier: latest?.tier,
+      // Match the SELECT-hit dedupe branch: priorTier reports the matched
+      // (current) row's tier. This is correct because in a dedupe situation
+      // the "prior" state is the row we're matching to.
+      priorTier: winner.tier,
       rationale,
       inserted: false,
     };

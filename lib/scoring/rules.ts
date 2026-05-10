@@ -344,14 +344,18 @@ function pluckField(name: string, ev: EvCtx): unknown {
  * lower bound for the comparison (a score equal to a tier's `lo` is in that
  * tier). Negative scores collapse to `cold`; very large scores to `on_fire`.
  *
+ * **Caller contract:** pass the integer score that will be persisted to
+ * storage. `computeScore` rounds the fractional sum from decay BEFORE calling
+ * this function so the displayed score and the displayed tier agree
+ * (otherwise an operator might see "Score: 15, Cold" when the underlying
+ * total was 14.6 — confusing). The function will accept fractional inputs
+ * for flexibility, but mixed-precision callers may see surprising results.
+ *
  * Tiers are assumed to be contiguous — the gap/overlap warning at parse time
  * surfaces operator misconfigurations. Upper bounds in the threshold tuples
  * are advisory (used by the parser's gap detector) rather than enforced
  * here, so a misconfigured threshold file can't make a score "fall through"
  * tiers; the lowest matching `lo` wins.
- *
- * Floats are accepted (the scoring engine sums fractional weights and only
- * rounds at storage). 14.999 maps to cold; 15.0 to warm — documented behavior.
  */
 export function scoreToTier(score: number, t: TierThresholds): Tier {
   if (score >= t.on_fire[0]) return 'on_fire';

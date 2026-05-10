@@ -534,11 +534,13 @@ describe('scoreToTier — boundary mapping', () => {
     expect(scoreToTier(-100, thresholds)).toBe('cold');
   });
 
-  it('rounds fractional scores down to the lower tier', () => {
-    // Scores arrive from computeScore as floats (decay returns float). The
-    // tier function uses >= comparisons, so 14.999 maps to cold even though
-    // 15.0 maps to warm. Documented behavior.
-    expect(scoreToTier(14.999, thresholds)).toBe('cold');
+  it('expects integer input from caller (computeScore rounds before calling)', () => {
+    // The caller contract: computeScore rounds the fractional sum BEFORE
+    // calling scoreToTier so the displayed score and tier agree. The
+    // function still works on fractional input, but those would only be
+    // produced by a misconfigured caller — the doc warns against it.
+    expect(scoreToTier(15, thresholds)).toBe('warm');     // canonical input
+    expect(scoreToTier(14.999, thresholds)).toBe('cold'); // fractional → cold
     expect(scoreToTier(15.0, thresholds)).toBe('warm');
   });
 });

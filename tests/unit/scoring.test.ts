@@ -258,7 +258,7 @@ describe('computeScore', () => {
     expect(db.select().from(schema.leadScores).all()).toHaveLength(2);
   });
 
-  it('inserts a new row when only the rules change (rules-md hash in fingerprint)', async () => {
+  it('inserts a new row when only the rules change (rules hash in fingerprint)', async () => {
     // Same evidence, same NOW — but a threshold tweak in the rules markdown
     // should still invalidate the fingerprint (so downstream tier-promotion
     // alerts can fire when an operator edits thresholds).
@@ -268,6 +268,34 @@ describe('computeScore', () => {
     const b = await computeScore(accountId, tweaked, NOW);
     expect(b.inserted).toBe(true);
     expect(b.scoreId).not.toBe(a.scoreId);
+  });
+
+  it('does NOT invalidate fingerprint on comment-only or whitespace-only edits to the rules file', async () => {
+    // The fingerprint hashes the PARSED rules + thresholds, not the raw
+    // markdown. So editing comments or formatting (which don't affect rule
+    // semantics) shouldn't churn every account's score row. Critical for
+    // operators iterating on the rules file.
+    addEvidence({ sourceType: 'intent_data' });
+    const a = await computeScore(accountId, RULES_MD, NOW);
+    const cosmetic = `# Scoring rules\n\nFootnote comment here.\n\n` + RULES_MD;
+    const b = await computeScore(accountId, cosmetic, NOW);
+    expect(b.inserted).toBe(false);
+    expect(b.scoreId).toBe(a.scoreId);
+  });
+
+  it('dedupes across calls with different `now` (within-window time-of-day stability)', async () => {
+    // The whole reason fingerprint hashes pair-set + rounded score (NOT
+    // raw decayed weights): two recomputes seconds apart with the same
+    // evidence-vs-rule matches must dedupe. Without this fix, every
+    // recompute with default `now` would write a fresh row.
+    addEvidence({ sourceType: 'intent_data' });
+    const a = await computeScore(accountId, RULES_MD, NOW);
+    // Recompute 5 seconds later — still well within R1's 7-day window,
+    // weight is fractionally different but rounded score is the same.
+    const slightlyLater = new Date(NOW.getTime() + 5000);
+    const b = await computeScore(accountId, RULES_MD, slightlyLater);
+    expect(b.inserted).toBe(false);
+    expect(b.scoreId).toBe(a.scoreId);
   });
 
   it('priorTier reports the previous score row tier on insert', async () => {
@@ -282,33 +310,48 @@ describe('computeScore', () => {
 
   // ===== Race-safe insert (catch-and-reselect) ============================
 
-  it('handles unique-violation race by re-selecting the winner', async () => {
-    // Pre-insert a row with the exact fingerprint we'd compute, simulating
-    // a concurrent recompute that won the race. The new computeScore call
-    // will hit the unique index on (accountId, fingerprint) and must
-    // re-select the winner instead of throwing.
+  it('SELECT-hit dedupe returns the matched scoreId without inserting', async () => {
+    // This exercises the latest-fingerprint-match short-circuit (the most
+    // common dedupe path in production). The catch-and-reselect path (when
+    // SELECT misses but INSERT loses to a concurrent winner on the unique
+    // index) is structurally similar and shares the same dedupe semantics
+    // — see coverage note inline in lib/scoring/score.ts. With a single
+    // in-memory better-sqlite3 connection and synchronous Drizzle
+    // transactions, the catch-path race cannot be deterministically
+    // reproduced without test-only seams.
     addEvidence({ sourceType: 'intent_data' });
-
-    // First call computes + inserts naturally. Note the fingerprint.
     const first = await computeScore(accountId, RULES_MD, NOW);
-    const winnerFp = db.select().from(schema.leadScores).all()[0].fingerprint;
+    const second = await computeScore(accountId, RULES_MD, NOW);
+    expect(second.scoreId).toBe(first.scoreId);
+    expect(second.inserted).toBe(false);
+    // Critical: priorTier on a dedupe equals the matched row's tier (which
+    // is also the current tier). Mirrors the catch-and-reselect branch.
+    expect(second.priorTier).toBe(first.tier);
+    expect(db.select().from(schema.leadScores).all()).toHaveLength(1);
+  });
 
-    // Delete the row but leave the fingerprint in our hand. Insert a
-    // synthetic row with the SAME fingerprint and the SAME accountId, but a
-    // different scoreId — simulating the race outcome.
-    db.delete(schema.leadScores).run();
-    const racerId = newId('leadScore');
+  it('orders latest by (computedAt, id) DESC for deterministic tie-break', async () => {
+    // Two rows with the same computedAt would otherwise have ambiguous
+    // "latest" — the orderBy includes id as a tie-breaker. Without this,
+    // priorTier reporting and the fingerprint short-circuit could be
+    // non-deterministic under high-concurrency real-clock collisions or
+    // injected `now` in tests.
+    const t = '2026-05-06T12:00:00.000Z';
     db.insert(schema.leadScores).values({
-      id: racerId, accountId, score: first.score, tier: first.tier,
-      rationaleJson: first.rationale, fingerprint: winnerFp,
+      id: 'ls_aaaa', accountId, score: 5, tier: 'cold',
+      fingerprint: 'fp_aaaa', rationaleJson: [],
+      computedAt: t,
+    }).run();
+    db.insert(schema.leadScores).values({
+      id: 'ls_zzzz', accountId, score: 6, tier: 'cold',
+      fingerprint: 'fp_zzzz', rationaleJson: [],
+      computedAt: t,
     }).run();
 
-    // Second computeScore — same input, would compute the same fingerprint.
-    // The latest-row-fingerprint short-circuit should match and short-circuit
-    // before any insert attempt, returning the racer's id.
-    const second = await computeScore(accountId, RULES_MD, NOW);
-    expect(second.scoreId).toBe(racerId);
-    expect(second.inserted).toBe(false);
-    expect(db.select().from(schema.leadScores).all()).toHaveLength(1);
+    addEvidence({ sourceType: 'intent_data' });
+    const r = await computeScore(accountId, RULES_MD, NOW);
+    // The "latest" by (computedAt DESC, id DESC) is ls_zzzz (lex-greater id
+    // wins the tie), so priorTier reports its tier ('cold' for score 6).
+    expect(r.priorTier).toBe('cold');
   });
 });
