@@ -86,11 +86,13 @@ function parseMediaType(header: string | null): string | null {
 
 /**
  * Read up to `maxBytes` from the request body, bailing on the first chunk
- * that crosses the cap. Bounds peak memory to roughly `2 * maxBytes`
- * (the streamed Uint8Array chunks plus the final Buffer.concat into a
- * UTF-8 string), regardless of whether Content-Length is present or
- * honest — a stronger DoS guarantee than buffering the whole body and
- * checking after, where peak memory is unbounded.
+ * that crosses the cap. Peak memory is bounded at a small constant
+ * multiple of `maxBytes` (streamed Uint8Array chunks + their Buffer-from
+ * copies + the final concatenated Buffer + the UTF-8 decode), regardless
+ * of whether Content-Length is present or honest. The point is the
+ * boundedness, not the exact multiplier: a buffer-then-check approach
+ * has *unbounded* peak memory for an attacker willing to lie about
+ * Content-Length.
  *
  * Duplicated from app/api/signals/route.ts. The two HTTP boundaries share
  * this byte-accurate streaming pattern; if a third caller wants the same
@@ -132,14 +134,31 @@ async function readBoundedBody(
  * Never used for response bodies — those stay sanitized to
  * `{error: 'internal'}`. This is the only place internal failure details
  * should land.
+ *
+ * Two robustness guards on the recursive `cause` walk:
+ *
+ *   1. Maximum depth of 4. Linear cause chains are almost always 1-2 deep
+ *      in practice; 4 is generous and bounds log size if some library
+ *      decides to wrap errors deeply.
+ *   2. Cycle detection via a visited set. A cyclic chain
+ *      (`e.cause = e`, or two errors that point at each other) would
+ *      otherwise infinite-recurse → stack overflow → the catch handler
+ *      itself crashes → request never returns a sanitized 500. Cycle
+ *      and depth-truncation are reported in the output so the operator
+ *      knows the chain was abbreviated.
  */
-function formatError(err: unknown): string {
+const MAX_CAUSE_DEPTH = 4;
+
+function formatError(err: unknown, depth = 0, seen: WeakSet<object> = new WeakSet()): string {
   if (err instanceof Error) {
+    if (seen.has(err)) return `${err.name}: ${err.message} (cycle truncated)`;
+    seen.add(err);
     const head = err.stack ?? `${err.name}: ${err.message}`;
-    if (err.cause !== undefined) {
-      return `${head}\n  caused by: ${formatError(err.cause)}`;
+    if (err.cause === undefined) return head;
+    if (depth + 1 >= MAX_CAUSE_DEPTH) {
+      return `${head}\n  caused by: (depth limit ${MAX_CAUSE_DEPTH} reached)`;
     }
-    return head;
+    return `${head}\n  caused by: ${formatError(err.cause, depth + 1, seen)}`;
   }
   // JSON.stringify can return `undefined` (not throw) for `undefined`,
   // functions, and symbols — guard that path explicitly so we never

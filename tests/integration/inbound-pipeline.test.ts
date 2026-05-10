@@ -297,4 +297,26 @@ describe('POST /api/scoring/recompute — internal errors are sanitized', () => 
     expect(body.error).toBe('internal');
     expect(JSON.stringify(body)).not.toMatch(/SECRET DB FAILURE/);
   });
+
+  it('does NOT crash when the thrown error has a cyclic .cause chain', async () => {
+    // Regression guard: formatError walks err.cause recursively to preserve
+    // log context. Without a cycle check, `err.cause === err` (or any
+    // back-reference) would infinite-recurse → stack overflow → handler
+    // crashes BEFORE the catch fires, and the client sees a process-level
+    // error instead of a clean 500. Verify the handler still returns the
+    // sanitized 500 even with a worst-case cause cycle.
+    const { db, schema: s } = await import('@/db');
+    db.insert(s.accounts).values({ id: 'acc_cyc', name: 'Acme', domain: 'acme.com' }).run();
+
+    const cyclic: Error & { cause?: unknown } = new Error('outer');
+    cyclic.cause = cyclic;
+
+    const scoreMod = await import('../../lib/scoring/score');
+    vi.spyOn(scoreMod, 'computeScore').mockRejectedValueOnce(cyclic);
+
+    const rec = await postRecompute(postRec({ accountId: 'acc_cyc' }));
+    expect(rec.status).toBe(500);
+    const body = await rec.json();
+    expect(body.error).toBe('internal');
+  });
 });
