@@ -53,6 +53,10 @@ afterEach(() => {
 
 import { POST as postSignal } from '../../app/api/signals/route';
 import { POST as postRecompute } from '../../app/api/scoring/recompute/route';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const ROUTING_PATH = resolve(process.cwd(), 'data/routing-rules.md');
 
 function nowIso(): string { return new Date().toISOString(); }
 
@@ -227,6 +231,49 @@ describe('POST /api/scoring/recompute — auth + production guard', () => {
     ENV.DEFAULT_OWNER_EMAIL = 'not-an-email';
     const rec = await postRecompute(postRec({ accountId: 'acc_x' }));
     expect(rec.status).toBe(503);
+  });
+});
+
+describe('POST /api/scoring/recompute — body cap is bytes-based and streaming', () => {
+  it('rejects bodies that exceed MAX_BODY_BYTES even when Content-Length is omitted', async () => {
+    // A 64KB payload buried inside a JSON object. Content-Length header is
+    // intentionally omitted to verify the streaming reader catches the
+    // overflow rather than buffering the whole body first.
+    const huge = 'x'.repeat(64 * 1024);
+    const req = new Request('http://x/api/scoring/recompute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },  // no Content-Length
+      body: JSON.stringify({ accountId: 'acc_x', filler: huge }),
+    });
+    const rec = await postRecompute(req);
+    expect(rec.status).toBe(413);
+  });
+});
+
+describe('POST /api/scoring/recompute — config validation is BEFORE account lookup', () => {
+  // Persist a malformed routing-rules.md, ensure the handler returns 503
+  // even when the account doesn't exist AND no lead_scores row is written.
+  // Restoration runs in finally so a test crash doesn't leave a broken file.
+  const ORIGINAL = readFileSync(ROUTING_PATH, 'utf8');
+  afterEach(() => writeFileSync(ROUTING_PATH, ORIGINAL, 'utf8'));
+
+  it('returns 503 (not 404) when routing-rules.md is malformed and accountId is unknown', async () => {
+    writeFileSync(ROUTING_PATH, '## RR1 — broken\n- priority: 10\n', 'utf8');
+    const rec = await postRecompute(postRec({ accountId: 'acc_missing' }));
+    expect(rec.status).toBe(503);
+    const body = await rec.json();
+    expect(body.error).toBe('misconfigured');
+  });
+
+  it('writes no leadScore row when routing-rules.md is malformed even if account exists', async () => {
+    const { db, schema: s } = await import('@/db');
+    db.insert(s.accounts).values({ id: 'acc_real', name: 'Real Co' }).run();
+    writeFileSync(ROUTING_PATH, '## RR1 — broken\n- priority: 10\n', 'utf8');
+    const rec = await postRecompute(postRec({ accountId: 'acc_real' }));
+    expect(rec.status).toBe(503);
+    // Config validation must fire BEFORE computeScore, so no side effects:
+    expect(db.select().from(s.leadScores).all()).toHaveLength(0);
+    expect(db.select().from(s.routingAssignments).all()).toHaveLength(0);
   });
 });
 
