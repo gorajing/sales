@@ -20,11 +20,14 @@ import { db } from '@/db';
 import {
   latestScorePerAccount,
   latestScoreForAccount,
+  recentSignalEvidence,
 } from '../../lib/inbound/queries';
 
 beforeEach(() => {
   db.delete(schema.routingAssignments).run();
   db.delete(schema.leadScores).run();
+  db.delete(schema.evidence).run();
+  db.delete(schema.contacts).run();
   db.delete(schema.accounts).run();
 });
 
@@ -122,6 +125,27 @@ describe('latestScorePerAccount', () => {
   });
 });
 
+describe('latestScorePerAccount — deterministic ordering', () => {
+  it('tied scores break deterministically on rowid DESC (newest insert wins the cut)', () => {
+    // Three accounts all tied at score=50. The top-2 cut MUST be
+    // deterministic across renders — without a tiebreaker, the row that
+    // gets dropped from the limit-N window could change each query.
+    // Insert order: A, B, C. rowid DESC ⇒ C, B, A.
+    ins('acc_A');
+    ins('acc_B');
+    ins('acc_C');
+    insScore({ id: 'ls_A', accountId: 'acc_A', score: 50, tier: 'hot' });
+    insScore({ id: 'ls_B', accountId: 'acc_B', score: 50, tier: 'hot' });
+    insScore({ id: 'ls_C', accountId: 'acc_C', score: 50, tier: 'hot' });
+
+    const top = latestScorePerAccount(2);
+    expect(top.map((r) => r.id)).toEqual(['ls_C', 'ls_B']);
+
+    // Re-query: order MUST be identical (no randomness).
+    expect(latestScorePerAccount(2).map((r) => r.id)).toEqual(['ls_C', 'ls_B']);
+  });
+});
+
 describe('latestScoreForAccount', () => {
   it('returns the most recent score row for the account by rowid DESC', () => {
     ins('acc_x');
@@ -151,5 +175,74 @@ describe('latestScoreForAccount', () => {
     insScore({ id: 'ls_first', accountId: 'acc_x', score: 5, tier: 'cold', computedAt: sameTs });
     insScore({ id: 'ls_second', accountId: 'acc_x', score: 95, tier: 'on_fire', computedAt: sameTs });
     expect(latestScoreForAccount('acc_x')?.id).toBe('ls_second');
+  });
+});
+
+// Direct evidence insertion bypassing ingestSignal so we can write
+// captured_at values with explicit offsets — those are accepted by the
+// SignalPayload Zod schema but the ingest path doesn't expose them as
+// test-tuning knobs. The schema's `signal_type` is nullable; we set it
+// to a non-'none' value so the recentSignalEvidence filter accepts.
+function insEvidence(opts: {
+  id: string; accountId: string; capturedAt: string;
+  signalType?: 'none' | 'intent' | 'engagement' | 'firmographic' | 'technographic' | 'trigger_event';
+  snippet?: string;
+}) {
+  db.insert(schema.evidence).values({
+    id: opts.id,
+    accountId: opts.accountId,
+    sourceUrl: 'https://x.example/',
+    sourceType: 'manual',
+    snippet: opts.snippet ?? 'snippet body',
+    extractedFact: 'fact',
+    capturedBy: 'manual',
+    capturedAt: opts.capturedAt,
+    signalType: opts.signalType ?? 'intent',
+  }).run();
+}
+
+describe('recentSignalEvidence', () => {
+  it('returns rows ordered by UTC-normalized capturedAt DESC, breaking ties on rowid', () => {
+    ins('acc_a');
+    // Three signals representing 11:00Z, 12:00Z, 13:00Z, deliberately
+    // written with DIFFERENT offset suffixes. A naive lexicographic sort
+    // on the text column would place '14:00+01:00' (= 13:00Z) BEFORE
+    // '12:00Z' alphabetically.
+    insEvidence({ id: 'ev_morn', accountId: 'acc_a', capturedAt: '2026-05-10T11:00:00.000Z' });
+    insEvidence({ id: 'ev_noon', accountId: 'acc_a', capturedAt: '2026-05-10T12:00:00.000Z' });
+    insEvidence({ id: 'ev_afternoon', accountId: 'acc_a', capturedAt: '2026-05-10T14:00:00.000+01:00' /* = 13:00Z */ });
+
+    const rows = recentSignalEvidence(10);
+    // Chronological UTC DESC: 13:00Z, 12:00Z, 11:00Z.
+    expect(rows.map((r) => r.id)).toEqual(['ev_afternoon', 'ev_noon', 'ev_morn']);
+  });
+
+  it('breaks ties on rowid DESC when capturedAt is identical', () => {
+    ins('acc_a');
+    const ts = '2026-05-10T12:00:00.000Z';
+    insEvidence({ id: 'ev_first', accountId: 'acc_a', capturedAt: ts });
+    insEvidence({ id: 'ev_second', accountId: 'acc_a', capturedAt: ts });
+    const rows = recentSignalEvidence(10);
+    expect(rows.map((r) => r.id)).toEqual(['ev_second', 'ev_first']);
+  });
+
+  it('excludes rows with signal_type="none" (the schema default for non-signal evidence)', () => {
+    ins('acc_a');
+    insEvidence({ id: 'ev_none', accountId: 'acc_a', capturedAt: '2026-05-10T12:00:00.000Z', signalType: 'none' });
+    insEvidence({ id: 'ev_intent', accountId: 'acc_a', capturedAt: '2026-05-10T13:00:00.000Z' });
+    const rows = recentSignalEvidence(10);
+    expect(rows.map((r) => r.id)).toEqual(['ev_intent']);
+  });
+
+  it('respects the limit', () => {
+    ins('acc_a');
+    for (let i = 0; i < 10; i++) {
+      insEvidence({ id: `ev_${i}`, accountId: 'acc_a', capturedAt: `2026-05-1${i}T12:00:00.000Z` });
+    }
+    expect(recentSignalEvidence(3)).toHaveLength(3);
+  });
+
+  it('returns an empty array when no signal-typed evidence exists', () => {
+    expect(recentSignalEvidence(10)).toEqual([]);
   });
 });

@@ -1,8 +1,8 @@
 import { db, schema } from '@/db';
-import { desc, inArray, ne, and, isNotNull } from 'drizzle-orm';
+import { inArray } from 'drizzle-orm';
 import { TierBadge } from '@/components/TierBadge';
 import { SignalRow } from '@/components/SignalRow';
-import { latestScorePerAccount } from '@/lib/inbound/queries';
+import { latestScorePerAccount, recentSignalEvidence } from '@/lib/inbound/queries';
 import Link from 'next/link';
 
 /**
@@ -33,27 +33,7 @@ export const dynamic = 'force-dynamic';
 
 export default async function InboundPage() {
   const topScored = latestScorePerAccount(25);
-
-  // Recent signal-typed evidence. Filter excludes:
-  //   - NULL signal_type (pre-v2 evidence, manual paste, etc.)
-  //   - 'none' (explicitly tagged non-signal)
-  // The schema only enforces the enum membership, not non-null, so the
-  // explicit isNotNull guards against pre-v2 rows leaking into the view.
-  const recentSignals = db.select({
-    id: schema.evidence.id,
-    capturedAt: schema.evidence.capturedAt,
-    sourceType: schema.evidence.sourceType,
-    signalType: schema.evidence.signalType,
-    snippet: schema.evidence.snippet,
-    accountId: schema.evidence.accountId,
-  }).from(schema.evidence)
-    .where(and(
-      isNotNull(schema.evidence.signalType),
-      ne(schema.evidence.signalType, 'none'),
-    ))
-    .orderBy(desc(schema.evidence.capturedAt))
-    .limit(50)
-    .all();
+  const recentSignals = recentSignalEvidence(50);
 
   // One bounded account fetch covering both sections.
   const referencedIds = Array.from(new Set([

@@ -26,13 +26,20 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <span className="text-neutral-300" aria-hidden="true">·</span>
             <Link href="/" className="hover:underline">Accounts</Link>
             <Link href="/inbound" className="hover:underline">Inbound</Link>
-            <Link
-              href="/alerts"
-              className="hover:underline text-neutral-400"
+            {/* /alerts isn't shipped yet; render a non-link placeholder
+                so keyboard / screen-reader users aren't promised a
+                working page. Pure CSS `text-neutral-400` would only
+                convey "disabled" to sighted users — aria-disabled +
+                visible "(soon)" suffix announces the state across
+                modalities. Swap back to a real <Link> when Task 2.3
+                lands. */}
+            <span
+              className="text-neutral-400 cursor-not-allowed"
+              aria-disabled="true"
               title="Coming soon (Task 2.3)"
             >
-              Alerts
-            </Link>
+              Alerts <span className="text-xs">(soon)</span>
+            </span>
           </nav>
         </header>
         <div className="mx-auto max-w-6xl p-6">{children}</div>
