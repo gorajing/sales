@@ -10,25 +10,34 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  *   weight(t) = baseWeight * (1 - elapsed/window)   for elapsed ∈ [0, window)
  *   weight(t) = 0                                   for elapsed ∉ [0, window)
  *
+ * **Returns a fractional weight, NOT a rounded integer.** Per-rule rounding
+ * was a bug: a `baseWeight=5` rule rounded to `0` for the last ~10% of its
+ * window, silently dropping signal. Consumers (the scoring engine in
+ * `lib/scoring/score.ts`) sum these fractions across all matching rules and
+ * round only at the final score, so total precision is preserved and the
+ * sign-asymmetry of `Math.round` (which rounds `+0.5 → +1` but `-0.5 → -0`)
+ * doesn't introduce per-rule bias.
+ *
  * Inputs:
- *   - `baseWeight`: any finite number. Negative values are supported (penalty
- *     rules — a scoring rule may dock score for a stale signal). The result
- *     is always rounded with JS `Math.round`, which rounds half away from
- *     zero for positives (so `baseWeight=1` at half-window → 1, not 0).
- *     Acceptable for scoring because production rules typically have
- *     `baseWeight ≥ 5`.
+ *   - `baseWeight`: any finite number (positive or negative). NaN / Infinity
+ *     throw `TypeError` — these would propagate undetected through the
+ *     scoring engine's sum and corrupt the final score for every account.
+ *     Negative values are supported (penalty rules — a scoring rule may
+ *     dock score for a stale signal).
  *   - `tEvent`: when the event was captured. If the underlying Date is
- *     invalid (NaN getTime), returns 0.
+ *     invalid (NaN getTime), returns 0 — invalid timestamps do not
+ *     contribute, rather than propagating NaN through the score arithmetic.
  *   - `now`: the moment we're scoring at. Same NaN-handling as `tEvent`.
  *   - `windowDays`: must be a finite positive number (integer or fractional).
- *     0, negative, NaN, and Infinity are caller errors and throw `TypeError`.
- *     Production rules go through the parser in `lib/scoring/rules.ts` which
- *     enforces a positive integer; this guard is defense-in-depth against
- *     misuse from elsewhere.
+ *     0, negative, NaN, Infinity, -Infinity are caller errors and throw
+ *     `TypeError`. Production rules go through the parser in
+ *     `lib/scoring/rules.ts` which enforces a positive integer; this guard
+ *     is defense-in-depth against misuse from elsewhere.
  *
  * Clock-skew guard: if `tEvent > now` (the event is in the future, almost
  * always indicating a clock skew between producer and ingest), returns 0
- * rather than producing a negative-elapsed scaling factor.
+ * rather than producing a negative-elapsed scaling factor that would
+ * over-weight future events.
  *
  * Pure: does not mutate either Date input.
  */
@@ -38,6 +47,11 @@ export function linearDecayWeight(
   now: Date,
   windowDays: number,
 ): number {
+  if (!Number.isFinite(baseWeight)) {
+    throw new TypeError(
+      `baseWeight must be a finite number; got ${baseWeight}`,
+    );
+  }
   if (!Number.isFinite(windowDays) || windowDays <= 0) {
     throw new TypeError(
       `windowDays must be a finite positive number; got ${windowDays}`,
@@ -50,5 +64,5 @@ export function linearDecayWeight(
   if (elapsedMs < 0) return 0;
   const windowMs = windowDays * MS_PER_DAY;
   if (elapsedMs >= windowMs) return 0;
-  return Math.round(baseWeight * (1 - elapsedMs / windowMs));
+  return baseWeight * (1 - elapsedMs / windowMs);
 }
