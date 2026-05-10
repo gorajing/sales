@@ -5,13 +5,17 @@ import Link from 'next/link';
 export const metadata = { title: 'Sales', description: 'Grounded sales tool' };
 
 /**
- * Root shell. Simple top nav that links to the major v2 surfaces:
+ * Root shell. Simple top nav that lists the major v2 surfaces:
  *
  *   - "/"        accounts list (existing v1 landing)
  *   - "/inbound" top scores + recent signals (Task 1.10)
- *   - "/alerts"  alert feed (404 until Task 2.3 ships — link is harmless
- *                until then; "Coming soon" hint included so an operator
- *                doesn't click expecting a working page)
+ *   - "Alerts"   non-link placeholder (`<span aria-disabled="true">`) until
+ *                Task 2.3 ships /alerts. A real <Link> here would either
+ *                404 silently for keyboard / touch / screen-reader users
+ *                (who don't see the greyed-out color cue) or have to
+ *                shadow-route to a "coming soon" page. The placeholder
+ *                preserves the visual symmetry while honestly conveying
+ *                "not actionable yet" across modalities.
  *
  * Nothing here owns auth — single-operator local-process deployment, so
  * a tenant-aware shell would be overkill for v2.

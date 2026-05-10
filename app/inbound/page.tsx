@@ -10,15 +10,21 @@ import Link from 'next/link';
  *
  * Two sections:
  *
- *   1. **Top-scored accounts** (latest score per account, sorted by score
- *      DESC, limit 25). Backed by `latestScorePerAccount`, which uses a
- *      SQL correlated subquery so the wire-level cost is bounded by the
- *      number of distinct accounts, not the historical score count.
+ *   1. **Top-scored accounts** (latest score per account, sorted by
+ *      `score DESC, rowid DESC`, limit 25). Backed by
+ *      `latestScorePerAccount`, which uses a SQL correlated subquery so
+ *      the wire-level cost is bounded by the number of distinct
+ *      accounts, not the historical score count. The `rowid` tiebreak
+ *      keeps the top-N cut deterministic when scores tie at the boundary.
  *
  *   2. **Recent signals** (most recent 50 `evidence` rows where
- *      `signal_type` is non-NULL and not `'none'`, ordered by
- *      `captured_at DESC`). Bounded at the query — no in-memory
- *      slicing.
+ *      `signal_type != 'none'`, ordered chronologically by
+ *      UTC-normalized `captured_at` and tied on `rowid DESC`). Backed
+ *      by `recentSignalEvidence`. The schema declares `signal_type` as
+ *      NOT NULL DEFAULT 'none', so the single `!= 'none'` filter
+ *      correctly excludes non-signal evidence including pre-v2 paste
+ *      rows. UTC normalization via `strftime` handles mixed-offset ISO
+ *      timestamps (the producer is free to send `Z` or `±HH:MM`).
  *
  * Account labels for both sections are resolved via a single bounded
  * `inArray` lookup over the union of account ids referenced. An earlier

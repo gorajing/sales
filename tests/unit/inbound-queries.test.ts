@@ -181,8 +181,9 @@ describe('latestScoreForAccount', () => {
 // Direct evidence insertion bypassing ingestSignal so we can write
 // captured_at values with explicit offsets — those are accepted by the
 // SignalPayload Zod schema but the ingest path doesn't expose them as
-// test-tuning knobs. The schema's `signal_type` is nullable; we set it
-// to a non-'none' value so the recentSignalEvidence filter accepts.
+// test-tuning knobs. The schema's `signal_type` is NOT NULL DEFAULT
+// 'none'; we set it to a non-'none' value here (default 'intent') so
+// the recentSignalEvidence filter accepts the row.
 function insEvidence(opts: {
   id: string; accountId: string; capturedAt: string;
   signalType?: 'none' | 'intent' | 'engagement' | 'firmographic' | 'technographic' | 'trigger_event';
