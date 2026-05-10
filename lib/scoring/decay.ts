@@ -12,11 +12,11 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
  *
  * **Returns a fractional weight, NOT a rounded integer.** Per-rule rounding
  * was a bug: a `baseWeight=5` rule rounded to `0` for the last ~10% of its
- * window, silently dropping signal. Consumers (the scoring engine in
- * `lib/scoring/score.ts`) sum these fractions across all matching rules and
- * round only at the final score, so total precision is preserved and the
- * sign-asymmetry of `Math.round` (which rounds `+0.5 → +1` but `-0.5 → -0`)
- * doesn't introduce per-rule bias.
+ * window, silently dropping signal. The scoring-engine consumer is expected
+ * to sum these fractions across all matching rules and round only at the
+ * final score, so total precision is preserved and the sign-asymmetry of
+ * `Math.round` (which rounds `+0.5 → +1` but `-0.5 → -0`) doesn't introduce
+ * per-rule bias.
  *
  * Inputs:
  *   - `baseWeight`: any finite number (positive or negative). NaN / Infinity

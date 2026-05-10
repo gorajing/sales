@@ -138,15 +138,20 @@ describe('linearDecayWeight — baseWeight cases (fractional return)', () => {
   });
 
   it('symmetric magnitude for ± baseWeight at the same elapsed (no Math.round bias)', () => {
-    // The prior rounded contract was sign-asymmetric: +5 at half-window
-    // rounded to 3 while -5 rounded to -2 (Math.round rounds half AWAY from
-    // zero for positives but TOWARD zero for negatives). Float math is
-    // symmetric: +5 → 2.5, -5 → -2.5.
-    const tQuarter = new Date('2026-05-07T18:00:00Z');  // 25% of 7d
-    const pos = linearDecayWeight(5, t0, tQuarter, 7);
-    const neg = linearDecayWeight(-5, t0, tQuarter, 7);
+    // Discriminating test: must use a case where the raw value lands EXACTLY
+    // at a .5 tie. Half-window with baseWeight=5 produces ±2.5 raw — the old
+    // rounded contract returned Math.round(2.5)=3 vs Math.round(-2.5)=-2
+    // (rounds half away from zero for positives, toward zero for negatives,
+    // sum=1, asymmetric). Float math is symmetric: +2.5 + -2.5 = 0.
+    //
+    // A non-tie case (e.g. quarter-window ±3.75) would pass under BOTH
+    // implementations because Math.round is sign-symmetric on non-half values
+    // — so this test exists specifically to catch the .5 asymmetry.
+    const pos = linearDecayWeight(5, t0, tHalf, 7);
+    const neg = linearDecayWeight(-5, t0, tHalf, 7);
+    expect(pos).toBeCloseTo(2.5, 9);
+    expect(neg).toBeCloseTo(-2.5, 9);
     expect(pos + neg).toBeCloseTo(0, 9);
-    expect(Math.abs(pos)).toBeCloseTo(Math.abs(neg), 9);
   });
 
   it('handles fractional windowDays correctly', () => {
