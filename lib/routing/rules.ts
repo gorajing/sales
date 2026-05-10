@@ -56,6 +56,18 @@ import type { Tier } from '../scoring/rules';
 const FIELDS = ['tier', 'firmographic_size', 'industry'] as const;
 type Field = (typeof FIELDS)[number];
 
+/** Allowed tier values — only this field is enum-validated at parse time.
+ *  firmographic_size and industry are free-form text columns so the parser
+ *  can't enumerate their valid values. Tier comes from a hard-coded scoring
+ *  union (lib/scoring/rules.ts:Tier) so we CAN validate it, and a typo'd
+ *  tier literal (`'hots'`) silently becomes a dead rule otherwise. */
+const TIER_VALUES = new Set(['cold', 'warm', 'hot', 'on_fire']);
+
+/** Normalizes an owner email to its canonical form (trimmed + lowercased).
+ *  Throws when the candidate doesn't look like an email. Shared between the
+ *  rules parser and route(), so both layers reject the same malformations. */
+const EMAIL_SHAPE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /** Discriminated union AST for predicates. Evaluator walks this; can't fail. */
 export type PredicateAst =
   | { kind: 'eq'; field: Field; value: string }
@@ -98,15 +110,34 @@ export function parseRoutingRules(md: string): RoutingRule[] {
   const seenIds = new Set<string>();
   const sections = md.split(/^## /m).slice(1);
 
+  // A section is "rule-shaped" if it has any of priority/predicate/owner_email
+  // bullets. Pure doc sections have none of these and are silently skipped.
+  // A rule-shaped section whose heading isn't `RR\d+` is treated as a typo
+  // (silent skip there would give an empty rule set and route everything to
+  // fallback). The `\b` anchor on the id regex rejects `RR1oops` — without
+  // it, `^(RR\d+)` would greedy-match `RR1` from `RR1oops` and discard the
+  // suffix silently.
+  const RULE_BULLET_RE = /^- (priority|predicate|owner_email)\b/m;
+
   for (const section of sections) {
-    const idMatch = section.match(/^(RR\d+)/);
-    if (!idMatch) continue;  // not a rule section (doc heading, etc.)
+    const idMatch = section.match(/^(RR\d+)\b/);
+    if (!idMatch) {
+      if (RULE_BULLET_RE.test(section)) {
+        const heading = section.split('\n', 1)[0].trim();
+        problems.push(
+          `section "## ${heading}" has rule bullets but its heading isn't a valid rule id — ` +
+          `rule ids must match the shape RR<digits> (e.g. RR1, RR12). Pure doc sections ` +
+          `should have no priority/predicate/owner_email bullets.`,
+        );
+      }
+      continue;  // doc section, no rule bullets
+    }
     const id = idMatch[1];
 
     if (seenIds.has(id)) {
       problems.push(`duplicate rule id "${id}" — each RR\\d+ heading must be unique`);
-      // Don't `continue` — keep parsing to surface ALL problems, but skip
-      // the body to avoid double-reporting field issues against the dup.
+      // Skip this duplicate body to avoid double-reporting field issues
+      // against the duplicate; the first occurrence is already accepted.
       continue;
     }
     seenIds.add(id);
@@ -127,12 +158,24 @@ export function parseRoutingRules(md: string): RoutingRule[] {
       }
     }
 
-    // predicate: backtick-quoted on a bullet line.
-    const predMatch = section.match(/- predicate:\s*`([^`]+)`/);
+    // predicate: backtick-quoted on a bullet line. Anchored start-to-end of
+    // line so `- predicate: \`tier == 'hot'\` AND industry == 'fintech'` is
+    // REJECTED rather than silently parsed as just `tier == 'hot'`.
+    const predMatch = section.match(/^- predicate:\s*`([^`]+)`\s*$/m);
     let predicate: string | null = null;
     let predicateAst: PredicateAst | null = null;
     if (!predMatch) {
-      ruleProblems.push(`${id}: missing "- predicate: \\\`<expr>\\\`"`);
+      // Distinguish "missing entirely" from "present but malformed" so the
+      // error message helps the operator. The malformed message catches both
+      // trailing content and unclosed backticks.
+      if (!/^- predicate:/m.test(section)) {
+        ruleProblems.push(`${id}: missing "- predicate: \\\`<expr>\\\`"`);
+      } else {
+        ruleProblems.push(
+          `${id}: predicate bullet is malformed — must be exactly ` +
+          `"- predicate: \\\`<expr>\\\`" with no trailing content`,
+        );
+      }
     } else {
       predicate = predMatch[1].trim();
       try {
@@ -143,14 +186,13 @@ export function parseRoutingRules(md: string): RoutingRule[] {
     }
 
     // owner_email: trimmed, lower-cased, basic shape.
-    const ownerMatch = section.match(/- owner_email:\s*(\S.*?)\s*$/m);
+    const ownerMatch = section.match(/^- owner_email:\s*(\S.*?)\s*$/m);
     let ownerEmail: string | null = null;
     if (!ownerMatch) {
       ruleProblems.push(`${id}: missing "- owner_email: <email>"`);
     } else {
       const candidate = ownerMatch[1].trim().toLowerCase();
-      // <local>@<host>.<tld> — at least one dot after the @, no whitespace.
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(candidate)) {
+      if (!EMAIL_SHAPE_RE.test(candidate)) {
         ruleProblems.push(`${id}: owner_email "${ownerMatch[1]}" doesn't look like an email`);
       } else {
         ownerEmail = candidate;
@@ -173,10 +215,16 @@ export function parseRoutingRules(md: string): RoutingRule[] {
 
   if (problems.length > 0) throw new RoutingRuleParseError(problems);
 
-  // Deterministic order: priority ASC, then id ASC. This makes equal-priority
-  // tie-breaking independent of the operator's authoring order in the file.
-  rules.sort((a, b) => a.priority - b.priority || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  // Deterministic order: priority ASC, then numeric id ASC. Numeric (not
+  // lexicographic) tie-break so RR2 beats RR10 — matching how an operator
+  // reading "rule numbers ascending" would expect them to evaluate.
+  rules.sort((a, b) => a.priority - b.priority || ruleIdNum(a.id) - ruleIdNum(b.id));
   return rules;
+}
+
+/** Parse the digit suffix out of an `RR\d+` id. Used for numeric tie-break. */
+function ruleIdNum(id: string): number {
+  return parseInt(id.slice(2), 10);
 }
 
 export function evalRoutingPredicate(ast: PredicateAst, ctx: RoutingContext): boolean {
@@ -208,25 +256,57 @@ export function evalRoutingPredicate(ast: PredicateAst, ctx: RoutingContext): bo
 /**
  * Hash the routing rules file over its **parsed semantics**, not raw bytes.
  *
- * This makes hashRoutingRules stable under comment-only and whitespace-only
- * edits — an operator adding a note doesn't churn every routing assignment
- * downstream. It is sensitive to: rule id additions/removals, priority changes,
- * predicate text changes, and owner_email changes. predicateAst is NOT in the
- * hash; we hash the predicate source string instead so AST representation
- * changes between revisions don't invalidate every assignment.
+ * Stable under: comment-only edits, whitespace-only edits, and predicate-
+ * internal whitespace edits (because the AST collapses lexical variation).
+ * Sensitive to: rule id changes, priority changes, predicate semantics
+ * changes, and owner_email changes.
  *
  * If the file is malformed, hashRoutingRules throws the same error
  * parseRoutingRules would — callers should never see a "hash of an invalid
  * file" because there shouldn't be one.
+ *
+ * **NOTE**: route() uses `hashRoutingConfig(rules, defaultOwnerEmail)`
+ * below, NOT this function, because the fallback owner is part of the
+ * effective routing configuration and changing it must invalidate
+ * fallback assignments.
  */
 export function hashRoutingRules(md: string): string {
-  const rules = parseRoutingRules(md);
-  const canonical = rules.map((r) => ({
-    id: r.id,
-    priority: r.priority,
-    predicate: r.predicate,
-    ownerEmail: r.ownerEmail,
-  }));
+  return hashRoutingConfig(parseRoutingRules(md), '');
+}
+
+/**
+ * Hash a parsed routing config (rules + default owner email).
+ *
+ * The hash captures everything that influences a routing decision:
+ *   - Each rule's id, priority, predicate semantics (via AST), and owner.
+ *   - The fallback owner email used when no rule matches.
+ *
+ * Why fold defaultOwnerEmail into the hash: route()'s idempotency key is
+ * `(account_id, score_id, routing_rules_hash)`. If the hash didn't include
+ * the default, then changing `DEFAULT_OWNER_EMAIL` would silently fail to
+ * recompute existing fallback assignments — the catch-and-reselect path
+ * would return the old row with the old owner. Folding the default in means
+ * a change produces a new hash → a new row → the correct new owner.
+ *
+ * Trade-off: rule-match assignments (where the default isn't actually used)
+ * also see a new hash on default changes and so write an effectively-identical
+ * new row. Storage cost is negligible; correctness is sharper.
+ *
+ * The default email is normalized (trim + lowercase) before hashing so
+ * cosmetic differences in env-var formatting don't churn.
+ */
+export function hashRoutingConfig(rules: RoutingRule[], defaultOwnerEmail: string): string {
+  const canonical = {
+    rules: rules.map((r) => ({
+      id: r.id,
+      priority: r.priority,
+      // Hash the AST, not the source string, so `tier == 'hot'` and
+      // `tier  ==  'hot'` collide (semantic equality, no whitespace churn).
+      predicate: r.predicateAst,
+      ownerEmail: r.ownerEmail,
+    })),
+    defaultOwnerEmail: defaultOwnerEmail.trim().toLowerCase(),
+  };
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 16);
 }
 
@@ -274,18 +354,21 @@ function parseLeaf(s: string): PredicateAst {
       throw new Error(`malformed IN list (expected ['v1', 'v2', ...]): "[${m[2]}]"`);
     }
     const values = [...inner.matchAll(/'([^']*)'/g)].map((q) => q[1]);
+    if (field === 'tier') values.forEach((v) => requireTierValue(v, s));
     return { kind: 'in', field, values };
   }
   // == 'value'
   m = s.match(/^(\w+)\s*==\s*'([^']*)'$/);
   if (m) {
     const field = requireField(m[1], s);
+    if (field === 'tier') requireTierValue(m[2], s);
     return { kind: 'eq', field, value: m[2] };
   }
   // != 'value'
   m = s.match(/^(\w+)\s*!=\s*'([^']*)'$/);
   if (m) {
     const field = requireField(m[1], s);
+    if (field === 'tier') requireTierValue(m[2], s);
     return { kind: 'ne', field, value: m[2] };
   }
   // Bare bareword == bareword is a common operator typo (`tier == hot` — they
@@ -296,6 +379,18 @@ function parseLeaf(s: string): PredicateAst {
     throw new Error(`string value must be single-quoted (got bareword "${m[2]}"; write '${m[2]}')`);
   }
   throw new Error(`unsupported or malformed predicate leaf: "${s}" — allowed operators are ==, !=, IN`);
+}
+
+function requireTierValue(v: string, leafSource: string): void {
+  // tier is the only enum-validated literal. Other fields (firmographic_size,
+  // industry) are free-form text columns and the parser can't enumerate their
+  // valid values; tier comes from a hard-coded scoring union so a typo'd
+  // literal silently becomes a dead rule otherwise.
+  if (!TIER_VALUES.has(v)) {
+    throw new Error(
+      `unknown tier value "${v}" in leaf "${leafSource}" — allowed: ${[...TIER_VALUES].join(', ')}`,
+    );
+  }
 }
 
 function requireField(name: string, leafSource: string): Field {

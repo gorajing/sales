@@ -4,10 +4,10 @@ Operator-editable rules that decide which owner email gets assigned to a scored 
 
 ## How matching works
 
-- Rules are evaluated in ascending **priority** order (lower number first). Ties are broken by rule **id** ascending (so `RR1` beats `RR2` when both have the same priority).
+- Rules are evaluated in ascending **priority** order (lower number first). Ties are broken by the **numeric suffix** of the rule id ascending (so `RR2` beats `RR10` when both have the same priority — operator-intuitive, not lexicographic).
 - The first rule whose predicate matches the account's tier + firmographics wins.
-- If no rule matches, the assignment falls through to the email in the `DEFAULT_OWNER_EMAIL` environment variable.
-- Routing recompute is idempotent against the **parsed semantics** of this file: a comment edit or a whitespace change doesn't churn assignments. Editing a predicate, priority, or owner email does.
+- If no rule matches, the assignment falls through to the email in the `DEFAULT_OWNER_EMAIL` environment variable. **Changing `DEFAULT_OWNER_EMAIL` invalidates existing fallback assignments** — the new value participates in the routing-config hash, so a recompute under a new default produces a fresh assignment.
+- Routing recompute is idempotent against the **parsed semantics** of this file: comments, blank lines, and whitespace inside or outside predicates don't churn assignments. Editing a predicate's semantics, priority, owner email, or the default owner email does.
 
 ## Allowed predicate grammar
 
@@ -20,7 +20,7 @@ Each rule has a single predicate expression composed of leaf clauses joined by `
 
 **Allowed fields** (the parser rejects any other field name):
 
-- `tier` — one of `cold`, `warm`, `hot`, `on_fire` (comes from the latest lead score).
+- `tier` — one of `cold`, `warm`, `hot`, `on_fire` (comes from the latest lead score). **Tier literals are enum-validated at parse time** — `tier == 'hots'` is rejected because that value can never appear in a score. The other fields are free-form text columns so the parser can't enumerate their valid values.
 - `firmographic_size` — `accounts.size` column (free-form string; common values: `smb`, `mid_market`, `enterprise`).
 - `industry` — `accounts.industry` column (free-form string).
 

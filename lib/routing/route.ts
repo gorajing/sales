@@ -2,7 +2,7 @@ import { db, schema } from '@/db';
 import { eq, and } from 'drizzle-orm';
 import { newId } from '../id';
 import {
-  parseRoutingRules, evalRoutingPredicate, hashRoutingRules,
+  parseRoutingRules, evalRoutingPredicate, hashRoutingConfig,
   type RoutingContext,
 } from './rules';
 
@@ -88,8 +88,12 @@ export async function route(
     );
   }
 
+  // Parse once; hash from the parsed config. The hash includes the
+  // normalized default email so that changing DEFAULT_OWNER_EMAIL
+  // invalidates existing fallback assignments — see hashRoutingConfig
+  // for why fallback owners are part of the effective config.
   const rules = parseRoutingRules(rulesMd);
-  const routingRulesHash = hashRoutingRules(rulesMd);
+  const routingRulesHash = hashRoutingConfig(rules, normalizedDefault);
 
   const score = db.select().from(schema.leadScores)
     .where(eq(schema.leadScores.id, scoreId)).get();

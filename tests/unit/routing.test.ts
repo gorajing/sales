@@ -171,4 +171,25 @@ describe('route', () => {
     const r = await route(accountId, sid, RULES_MD, '  Triage@Example.COM  ');
     expect(r.ownerEmail).toBe('triage@example.com');
   });
+
+  it('changing defaultOwnerEmail produces a fresh fallback assignment (NOT sticky to the old default)', async () => {
+    // Cold-tier account: no rule matches RULES_MD (RR1 needs hot/on_fire,
+    // RR2 needs warm). The first route() call falls through to fallback-a.
+    // The second call with fallback-b MUST produce a new row whose owner is
+    // fallback-b — otherwise a DEFAULT_OWNER_EMAIL change would silently
+    // never propagate to existing cold-tier accounts.
+    db.delete(schema.leadScores).where(eq(schema.leadScores.id, scoreId)).run();
+    const sid = newId('leadScore');
+    db.insert(schema.leadScores).values({
+      id: sid, accountId, score: 5, tier: 'cold',
+      fingerprint: 'fp_cold', rationaleJson: [],
+    }).run();
+    const a = await route(accountId, sid, RULES_MD, 'fallback-a@x.com');
+    const b = await route(accountId, sid, RULES_MD, 'fallback-b@x.com');
+    expect(a.ownerEmail).toBe('fallback-a@x.com');
+    expect(b.ownerEmail).toBe('fallback-b@x.com');
+    expect(b.assignmentId).not.toBe(a.assignmentId);
+    expect(b.routingRulesHash).not.toBe(a.routingRulesHash);
+    expect(db.select().from(schema.routingAssignments).all()).toHaveLength(2);
+  });
 });

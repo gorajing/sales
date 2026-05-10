@@ -3,6 +3,7 @@ import {
   parseRoutingRules,
   evalRoutingPredicate,
   hashRoutingRules,
+  hashRoutingConfig,
   RoutingRuleParseError,
   type RoutingContext,
 } from '../../lib/routing/rules';
@@ -70,6 +71,24 @@ describe('parseRoutingRules — happy path', () => {
     const rules = parseRoutingRules(sameP);
     // Same priority — RR1 must come before RR2 regardless of authoring order.
     expect(rules.map((r) => r.id)).toEqual(['RR1', 'RR2']);
+  });
+
+  it('tie-breaks numerically — RR2 beats RR10 (NOT lexicographic)', () => {
+    // If the sort were lexicographic, RR10 < RR2 by string compare, which
+    // would silently re-order policy as rule count grows past 9.
+    const sameP = `
+## RR10 — Ten
+- priority: 30
+- predicate: \`tier == 'warm'\`
+- owner_email: ten@x.com
+
+## RR2 — Two
+- priority: 30
+- predicate: \`tier == 'hot'\`
+- owner_email: two@x.com
+`;
+    const rules = parseRoutingRules(sameP);
+    expect(rules.map((r) => r.id)).toEqual(['RR2', 'RR10']);
   });
 
   it('normalizes owner_email to lowercase trimmed', () => {
@@ -174,20 +193,92 @@ describe('parseRoutingRules — strict validation (no silent skip)', () => {
     expect(() => parseRoutingRules(bad)).toThrow(/priority/i);
   });
 
-  it('rejects rule ids that are not RR\\d+', () => {
+  it('throws when a rule-shaped section has a malformed heading (silent skip is wrong)', () => {
+    // A section that has all three rule bullet lines but a heading that
+    // doesn't match RR\d+ is almost certainly a typo — silently treating it
+    // as a doc section produces an empty rule set and fallback routing for
+    // every account. Distinguish doc sections (no rule bullets) from
+    // malformed rule sections (has rule bullets).
     const bad = `
-## R1 — wrong shape
+## R1 — typo, should have been RR1
 - priority: 10
 - predicate: \`tier == 'hot'\`
 - owner_email: ae@x.com
 `;
-    // Sections that aren't routing rules should not be parsed as routing rules.
-    // The parser must not silently treat them as rules — either skip cleanly
-    // (if obviously not a rule section) or throw if they look ambiguously like
-    // one. We pick "ignore sections whose id doesn't match RR\d+" to allow
-    // future doc sections in the file (e.g. "## How matching works").
-    const rules = parseRoutingRules(bad);
-    expect(rules).toHaveLength(0);
+    expect(() => parseRoutingRules(bad)).toThrow(/RR\\?d\+|heading|malformed/i);
+  });
+
+  it('rejects RR1oops — id must end at a word boundary', () => {
+    const bad = `
+## RR1oops — looks like a rule but suffix is garbage
+- priority: 10
+- predicate: \`tier == 'hot'\`
+- owner_email: ae@x.com
+`;
+    expect(() => parseRoutingRules(bad)).toThrow();
+  });
+
+  it('allows pure doc sections that have no rule bullets', () => {
+    const ok = `
+## How matching works
+
+Rules are evaluated in ascending priority order. First match wins.
+
+## RR1 — Hot
+- priority: 10
+- predicate: \`tier == 'hot'\`
+- owner_email: ae@x.com
+`;
+    const rules = parseRoutingRules(ok);
+    expect(rules.map((r) => r.id)).toEqual(['RR1']);
+  });
+
+  it('throws when predicate line has trailing content after the closing backtick', () => {
+    // The original regex was unanchored, so this silently dropped the
+    // trailing AND clause and routed on only the first backticked fragment.
+    const bad = `
+## RR1 — sneaky
+- priority: 10
+- predicate: \`tier == 'hot'\` AND industry == 'fintech'
+- owner_email: ae@x.com
+`;
+    expect(() => parseRoutingRules(bad)).toThrow(RoutingRuleParseError);
+  });
+
+  it('throws on unknown tier literal in equality', () => {
+    const bad = `
+## RR1 — typo'd tier
+- priority: 10
+- predicate: \`tier == 'hots'\`
+- owner_email: ae@x.com
+`;
+    let err: unknown;
+    try { parseRoutingRules(bad); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(RoutingRuleParseError);
+    expect((err as Error).message).toMatch(/hots/);
+  });
+
+  it('throws on unknown tier literal inside IN list', () => {
+    const bad = `
+## RR1 — typo'd tier in IN
+- priority: 10
+- predicate: \`tier IN ['hot', 'onfire']\`
+- owner_email: ae@x.com
+`;
+    expect(() => parseRoutingRules(bad)).toThrow(/onfire/);
+  });
+
+  it('accepts free-form (non-tier) values without enum validation', () => {
+    // firmographic_size and industry are free-form text columns; the parser
+    // can't know all valid values, so any non-empty single-quoted string is
+    // accepted. Tier is the only enum-validated field.
+    const ok = `
+## RR1 — Custom firmographic
+- priority: 10
+- predicate: \`firmographic_size == 'public-sector-fed'\`
+- owner_email: ae@x.com
+`;
+    expect(() => parseRoutingRules(ok)).not.toThrow();
   });
 });
 
@@ -304,5 +395,36 @@ describe('hashRoutingRules — semantics not raw bytes', () => {
     const a = hashRoutingRules(baseMd);
     const edited = baseMd.replace('priority: 10', 'priority: 11');
     expect(hashRoutingRules(edited)).not.toBe(a);
+  });
+
+  it('is stable under predicate-internal whitespace edits', () => {
+    // Predicate semantics are captured by the AST. Whitespace around operators
+    // is lexical noise and should not churn the hash.
+    const a = hashRoutingRules(baseMd);
+    const padded = baseMd.replace(`\`tier == 'hot'\``, `\`tier    ==    'hot'\``);
+    expect(hashRoutingRules(padded)).toBe(a);
+  });
+});
+
+describe('hashRoutingConfig — folds defaultOwnerEmail into the config hash', () => {
+  const baseMd = `
+## RR1 — Hot
+- priority: 10
+- predicate: \`tier == 'hot'\`
+- owner_email: ae@x.com
+`;
+
+  it('hashRoutingConfig differs when defaultOwnerEmail changes (so fallback churns correctly)', () => {
+    const rules = parseRoutingRules(baseMd);
+    const a = hashRoutingConfig(rules, 'fallback-a@x.com');
+    const b = hashRoutingConfig(rules, 'fallback-b@x.com');
+    expect(b).not.toBe(a);
+  });
+
+  it('hashRoutingConfig normalizes defaultOwnerEmail (whitespace + case ignored)', () => {
+    const rules = parseRoutingRules(baseMd);
+    const a = hashRoutingConfig(rules, 'fallback@x.com');
+    const b = hashRoutingConfig(rules, '  Fallback@X.COM  ');
+    expect(b).toBe(a);
   });
 });
