@@ -43,6 +43,13 @@
       "when": 1778376157457,
       "tag": "0005_closed_scrambler",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1778376609381,
+      "tag": "0006_daffy_lionheart",
+      "breakpoints": true
     }
   ]
 }

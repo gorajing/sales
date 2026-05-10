@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { db, schema } from '@/db';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { newId } from '../id';
 import { parseScoringRules, evalPredicate, scoreToTier, type Tier } from './rules';
 import { linearDecayWeight } from './decay';
@@ -43,9 +43,8 @@ const MAX_SCORE = 100;
  *
  * Two recomputes that produce the same logical state — same rounded score,
  * same tier, same set of (evidence_id, rule_id) matches, same parsed rules
- * — must yield the same fingerprint. Idempotency relies on this: the
- * leadScores table has a UNIQUE index on (accountId, fingerprint), and we
- * short-circuit when the latest row's fingerprint matches the new one.
+ * — must yield the same fingerprint. The latest-row short-circuit in
+ * `computeScore` uses this to skip an insert when nothing has changed.
  *
  * What's hashed (and why):
  *   - **rounded score** (integer): captures the magnitude as it will be
@@ -57,10 +56,15 @@ const MAX_SCORE = 100;
  *   - **sorted (evidence_id, rule_id) pairs**: captures *which* matches
  *     produced the score, distinguishing e.g. "score 15 from one rule" from
  *     "score 15 from three rules with offsetting weights."
- *   - **parsed rules + thresholds hash**: any rule semantics change
+ *   - **parsed-rules canonical hash**: any rule semantics change
  *     (threshold edit, predicate edit, weight, window) invalidates. But
  *     comment-only or whitespace-only edits to the markdown DON'T — the
  *     hash is over the parsed object, not the raw file.
+ *
+ * Same fingerprint after an intervening different state IS expected (state
+ * recurrence: cold → warm → cold). The DB column is a non-unique index;
+ * recurrence appends a new row and the latest-fingerprint short-circuit
+ * still works because it compares against the LATEST row only.
  */
 function fingerprint(
   score: number,
@@ -78,14 +82,6 @@ function fingerprint(
   return createHash('sha256')
     .update(`${score}::${tier}::${pairs}::${rulesHash}`)
     .digest('hex').slice(0, 16);
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  // Narrow to UNIQUE / PRIMARY KEY constraint violations only. FK / NOT NULL /
-  // CHECK violations are real bugs and must propagate.
-  const e = err as { code?: string };
-  return e?.code === 'SQLITE_CONSTRAINT_UNIQUE'
-      || e?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
 }
 
 /**
@@ -154,82 +150,68 @@ export async function computeScore(
   const score = Math.round(Math.min(MAX_SCORE, total));
   const tier = scoreToTier(score, thresholds);
   // Hash the parsed rules + thresholds (canonical form) instead of the raw
-  // markdown so comment-only / whitespace-only edits don't invalidate
-  // every account's fingerprint.
+  // markdown text so comment-only and whitespace-only edits don't
+  // invalidate every account's fingerprint.
   const parsedRulesCanonical = JSON.stringify({ rules, thresholds });
   const fp = fingerprint(score, tier, rationale, parsedRulesCanonical);
 
   // Latest existing score for this account — used both for the prior-tier
   // report (so downstream alerts know what the tier transitioned from) and
-  // for the fingerprint short-circuit. Order by (computedAt, id) DESC for
-  // a deterministic tie-break when two rows share a millisecond timestamp
-  // (possible with injected `now` in tests, or with real-clock collisions
-  // under high concurrency).
+  // for the fingerprint short-circuit. Order by SQLite's `rowid` DESC: it's
+  // monotonically incrementing per table, guaranteed unique, and reflects
+  // actual insert order — unlike (computedAt, id), which can tie when
+  // tests inject the same `now` and where text-id tie-break is non-
+  // monotonic (random hex suffix).
   const latest = db.select().from(schema.leadScores)
     .where(eq(schema.leadScores.accountId, accountId))
-    .orderBy(desc(schema.leadScores.computedAt), desc(schema.leadScores.id))
+    .orderBy(sql`rowid DESC`)
     .limit(1).get();
 
   if (latest && latest.fingerprint === fp) {
+    // State unchanged since latest write — return the persisted row exactly.
+    // Critically, return the STORED rationale (rationaleJson) rather than
+    // the freshly-computed `rationale`: now that fingerprint excludes raw
+    // decayed weights, a same-state recompute at a slightly different
+    // `now` produces different per-rule weights even though the matched
+    // (evidence_id, rule_id) set is identical. Returning the stored
+    // rationale keeps the result coherent with what's on disk.
     return {
       scoreId: latest.id,
       accountId,
       score: latest.score,
       tier: latest.tier,
       priorTier: latest.tier,  // dedupe: prior was the matched row itself
-      rationale,
+      rationale: latest.rationaleJson,
       inserted: false,
     };
   }
 
+  // No unique constraint on (accountId, fingerprint): state recurrence
+  // (e.g. cold → warm → cold via signal decay) inserts a fresh row even
+  // when the new fingerprint matches a non-latest historical row. The
+  // single-process SQLite serialization means two concurrent computeScores
+  // in this Node process serialize their transactions; one sees the other's
+  // committed row in its SELECT and short-circuits via the path above.
+  // Multi-process SQLite would need a different concurrency story (sequence
+  // column or chain indicator in the fingerprint); deliberately not built
+  // for v2.
   const scoreId = newId('leadScore');
-  try {
-    db.insert(schema.leadScores).values({
-      id: scoreId,
-      accountId,
-      score,
-      tier,
-      rationaleJson: rationale,
-      fingerprint: fp,
-      computedAt: now.toISOString(),
-    }).run();
-    return {
-      scoreId,
-      accountId,
-      score,
-      tier,
-      priorTier: latest?.tier,  // first-ever score → undefined
-      rationale,
-      inserted: true,
-    };
-  } catch (err) {
-    // Concurrent recompute: another caller wrote the same (account,
-    // fingerprint) first. Re-select that row instead of inserting a duplicate.
-    //
-    // Coverage note: this branch is reachable only under true write-side
-    // concurrency between two transactions. With a single in-memory
-    // better-sqlite3 connection and synchronous Drizzle transactions, the
-    // race cannot be deterministically reproduced without test-only seams
-    // or fragile internal-API spies. The branch structurally mirrors the
-    // SELECT-hit path above and shares the same priorTier semantics.
-    if (!isUniqueViolation(err)) throw err;
-    const winner = db.select().from(schema.leadScores)
-      .where(and(
-        eq(schema.leadScores.accountId, accountId),
-        eq(schema.leadScores.fingerprint, fp),
-      )).get();
-    if (!winner) throw err;
-    return {
-      scoreId: winner.id,
-      accountId,
-      score: winner.score,
-      tier: winner.tier,
-      // Match the SELECT-hit dedupe branch: priorTier reports the matched
-      // (current) row's tier. This is correct because in a dedupe situation
-      // the "prior" state is the row we're matching to.
-      priorTier: winner.tier,
-      rationale,
-      inserted: false,
-    };
-  }
+  db.insert(schema.leadScores).values({
+    id: scoreId,
+    accountId,
+    score,
+    tier,
+    rationaleJson: rationale,
+    fingerprint: fp,
+    computedAt: now.toISOString(),
+  }).run();
+  return {
+    scoreId,
+    accountId,
+    score,
+    tier,
+    priorTier: latest?.tier,  // first-ever score → undefined
+    rationale,
+    inserted: true,
+  };
 }

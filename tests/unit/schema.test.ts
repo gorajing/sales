@@ -113,19 +113,23 @@ describe('schema v2 (signals/scoring/routing)', () => {
     expect(db.select().from(schema.alerts).all()).toHaveLength(1);
   });
 
-  it('enforces unique (accountId, fingerprint) on leadScores', () => {
+  it('allows duplicate (accountId, fingerprint) on leadScores (state recurrence)', () => {
+    // The earlier UNIQUE (accountId, fingerprint) index was dropped in
+    // migration 0006 because it blocked legitimate state recurrence
+    // (cold → warm → cold returning to cold should NOT collide with the
+    // initial cold row). Now it's a non-unique index for query speed only.
     const { db } = freshDb();
     db.insert(schema.accounts).values({ id: 'acc_1', name: 'X' }).run();
     db.insert(schema.leadScores).values({
       id: 'ls_1', accountId: 'acc_1', score: 10, tier: 'cold',
       fingerprint: 'fp_dup', rationaleJson: [],
     }).run();
-    expect(() =>
-      db.insert(schema.leadScores).values({
-        id: 'ls_2', accountId: 'acc_1', score: 10, tier: 'cold',
-        fingerprint: 'fp_dup', rationaleJson: [],
-      }).run()
-    ).toThrow();
+    // Same (accountId, fingerprint) on a second row succeeds.
+    db.insert(schema.leadScores).values({
+      id: 'ls_2', accountId: 'acc_1', score: 10, tier: 'cold',
+      fingerprint: 'fp_dup', rationaleJson: [],
+    }).run();
+    expect(db.select().from(schema.leadScores).all()).toHaveLength(2);
   });
 
   it('enforces unique (accountId, scoreId, routingRulesHash) on routingAssignments', () => {

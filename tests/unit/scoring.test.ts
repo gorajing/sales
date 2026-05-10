@@ -16,6 +16,7 @@ vi.mock('@/db', async () => {
   return { db, schema: schemaMod };
 });
 
+import { eq } from 'drizzle-orm';
 import { db } from '@/db';
 import { newId } from '../../lib/id';
 import { computeScore } from '../../lib/scoring/score';
@@ -60,7 +61,7 @@ describe('computeScore', () => {
     snippet?: string;
     capturedAt?: string;
     extractionStatus?: 'pending_audit' | 'verified' | 'disputed';
-  }): string {
+  } = {}): string {
     const id = newId('evidence');
     db.insert(schema.evidence).values({
       id,
@@ -311,47 +312,93 @@ describe('computeScore', () => {
   // ===== Race-safe insert (catch-and-reselect) ============================
 
   it('SELECT-hit dedupe returns the matched scoreId without inserting', async () => {
-    // This exercises the latest-fingerprint-match short-circuit (the most
-    // common dedupe path in production). The catch-and-reselect path (when
-    // SELECT misses but INSERT loses to a concurrent winner on the unique
-    // index) is structurally similar and shares the same dedupe semantics
-    // — see coverage note inline in lib/scoring/score.ts. With a single
-    // in-memory better-sqlite3 connection and synchronous Drizzle
-    // transactions, the catch-path race cannot be deterministically
-    // reproduced without test-only seams.
+    // The latest-fingerprint-match short-circuit. With single-process
+    // SQLite and synchronous transactions, this is the only dedupe path —
+    // the prior unique-index catch-and-reselect was removed because it
+    // blocked legitimate state recurrence (see test below).
     addEvidence({ sourceType: 'intent_data' });
     const first = await computeScore(accountId, RULES_MD, NOW);
     const second = await computeScore(accountId, RULES_MD, NOW);
     expect(second.scoreId).toBe(first.scoreId);
     expect(second.inserted).toBe(false);
-    // Critical: priorTier on a dedupe equals the matched row's tier (which
-    // is also the current tier). Mirrors the catch-and-reselect branch.
     expect(second.priorTier).toBe(first.tier);
     expect(db.select().from(schema.leadScores).all()).toHaveLength(1);
   });
 
-  it('orders latest by (computedAt, id) DESC for deterministic tie-break', async () => {
-    // Two rows with the same computedAt would otherwise have ambiguous
-    // "latest" — the orderBy includes id as a tie-breaker. Without this,
-    // priorTier reporting and the fingerprint short-circuit could be
-    // non-deterministic under high-concurrency real-clock collisions or
-    // injected `now` in tests.
+  it('state recurrence: cold → warm → cold inserts THREE rows even though fingerprints recur', async () => {
+    // Regression test for codex-flagged bug: when (accountId, fingerprint)
+    // had a unique index, an account that returned to a prior state (e.g.
+    // signal decayed back to 0/cold after a warm peak) would silently
+    // collide with the older row instead of writing a new one. Now the
+    // index is non-unique; recurrence works correctly.
+
+    // (1) Genesis cold (no signals)
+    const a = await computeScore(accountId, RULES_MD, NOW);
+    expect(a.tier).toBe('cold');
+
+    // (2) Add a signal → warm
+    const evId = addEvidence({ sourceType: 'intent_data' });
+    const b = await computeScore(accountId, RULES_MD, NOW);
+    expect(b.tier).toBe('warm');
+    expect(b.scoreId).not.toBe(a.scoreId);
+
+    // (3) Remove the signal (simulates audit critic disputing it, or
+    // operator deletion) → back to cold. Same fingerprint as step 1, but
+    // logically a new transition warm → cold.
+    db.delete(schema.evidence)
+      .where(eq(schema.evidence.id, evId)).run();
+    const c = await computeScore(accountId, RULES_MD, NOW);
+    expect(c.tier).toBe('cold');
+    expect(c.scoreId).not.toBe(a.scoreId);  // NOT collapsed onto the older cold
+    expect(c.scoreId).not.toBe(b.scoreId);
+    expect(c.priorTier).toBe('warm');  // came from warm
+    expect(db.select().from(schema.leadScores).all()).toHaveLength(3);
+  });
+
+  it('on dedupe, returns the STORED rationale (not a freshly-computed one with different weights)', async () => {
+    // After fingerprint stopped including raw weights, a same-state recompute
+    // at a different `now` would have the same fingerprint but different
+    // per-rule decay weights. Result must reflect the persisted row.
+    addEvidence({ sourceType: 'intent_data' });
+    const first = await computeScore(accountId, RULES_MD, NOW);
+    const storedWeight = first.rationale[0].weight;
+
+    // Recompute 2 hours later — still in window; weight is fractionally
+    // different but the rounded score is the same → fingerprint matches.
+    const later = new Date(NOW.getTime() + 2 * 60 * 60 * 1000);
+    const second = await computeScore(accountId, RULES_MD, later);
+    expect(second.inserted).toBe(false);
+    // The returned rationale weight matches the STORED weight (from the
+    // first call), not what we'd compute fresh at `later`.
+    expect(second.rationale[0].weight).toBe(storedWeight);
+  });
+
+  it('orders latest by SQLite rowid DESC (monotonic insert order, immune to id/computedAt collisions)', async () => {
+    // Earlier draft used (computedAt DESC, id DESC) as the tie-breaker, but
+    // both can collide: tests inject the same `now`, and our text-prefixed
+    // ids are random-hex-suffixed so lex-order is non-monotonic vs insert
+    // order. Switched to ORDER BY rowid DESC, which SQLite guarantees is
+    // monotonically increasing per insert.
     const t = '2026-05-06T12:00:00.000Z';
+    // Insert ls_zzzz FIRST (lex-greater id) and ls_aaaa SECOND (lex-smaller).
+    // With (id DESC) tie-break the "latest" would be ls_zzzz; with (rowid
+    // DESC) it's ls_aaaa (the actually-newer row).
     db.insert(schema.leadScores).values({
-      id: 'ls_aaaa', accountId, score: 5, tier: 'cold',
-      fingerprint: 'fp_aaaa', rationaleJson: [],
+      id: 'ls_zzzz_first', accountId, score: 99, tier: 'on_fire',
+      fingerprint: 'fp_z', rationaleJson: [],
       computedAt: t,
     }).run();
     db.insert(schema.leadScores).values({
-      id: 'ls_zzzz', accountId, score: 6, tier: 'cold',
-      fingerprint: 'fp_zzzz', rationaleJson: [],
+      id: 'ls_aaaa_second', accountId, score: 5, tier: 'cold',
+      fingerprint: 'fp_a', rationaleJson: [],
       computedAt: t,
     }).run();
 
     addEvidence({ sourceType: 'intent_data' });
     const r = await computeScore(accountId, RULES_MD, NOW);
-    // The "latest" by (computedAt DESC, id DESC) is ls_zzzz (lex-greater id
-    // wins the tie), so priorTier reports its tier ('cold' for score 6).
+    // priorTier should be 'cold' (tier of ls_aaaa_second, the actually-
+    // most-recently-inserted row), NOT 'on_fire' (tier of ls_zzzz_first
+    // which would be picked by id-DESC tie-break).
     expect(r.priorTier).toBe('cold');
   });
 });

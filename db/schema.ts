@@ -221,10 +221,14 @@ export const leadScores = sqliteTable('lead_scores', {
     .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
   expiresAt: text('expires_at'),  // ISO 8601; null = no expiry
 }, (t) => ({
-  // Concurrent recomputes are made idempotent at the DB level: two parallel
-  // calls computing the same (account, fingerprint) collide on this index;
-  // computeScore catches the unique violation and re-selects the winner.
-  accountFingerprintUnique: uniqueIndex('lead_scores_account_fingerprint_unique')
+  // Non-unique index for the latest-row lookup in computeScore. Earlier
+  // versions had a UNIQUE (accountId, fingerprint) constraint as defense
+  // against multi-writer SQLite races, but it broke state recurrence: an
+  // account that goes cold → warm → cold would have the third row collide
+  // with the first row's fingerprint and silently return the stale id.
+  // Single-process SQLite serializes transactions, so the unique was
+  // defending against a race we don't have. Reverted to a plain index.
+  accountFingerprintIdx: index('lead_scores_account_fingerprint_idx')
     .on(t.accountId, t.fingerprint),
 }));
 
