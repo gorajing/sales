@@ -235,6 +235,38 @@ describe('parseScoringRules — tier thresholds', () => {
     warn.mockRestore();
   });
 
+  it('warns on a typo in the tier name itself (e.g. - warmm: 15-34)', () => {
+    // Critical: "- warmm: 15-34" doesn't match a known tier. Earlier impl
+    // only scanned lines starting with `- (cold|warm|hot|on_fire):`, so
+    // this typo was silently ignored and "warm" silently fell back to
+    // default. Now ALL bullets under the tier section are scanned.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const md = `
+## Tier thresholds
+- cold: 0–14
+- warmm: 15–34
+- hot: 35–59
+- on_fire: 60+
+`;
+    parseScoringRules(md);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns when a tier line is missing the colon', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const md = `
+## Tier thresholds
+- cold 0-14
+- warm: 15–34
+- hot: 35–59
+- on_fire: 60+
+`;
+    parseScoringRules(md);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('tolerates whitespace around the colon in tier lines', () => {
     const md = `
 ## Tier thresholds
@@ -328,6 +360,51 @@ describe('evalPredicate — leaf operators', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(evalPredicate("nonexistent_field == 'x'", ev())).toBe(false);
     expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns about a malformed branch even when an earlier OR branch matches (no short-circuit silencing)', () => {
+    // Eager evaluation of all branches: a typo in the second branch must
+    // surface even though the first branch already returned true.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(evalPredicate(
+      "source_type == 'intent_data' OR snippet HAS '/pricing'",
+      ev(),
+    )).toBe(false);  // throws via second branch, evalPredicate returns false
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('warns about a malformed branch even when an earlier AND branch returns false', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(evalPredicate(
+      "source_type == 'web_traffic' AND snippet HAS '/pricing'",
+      ev(),
+    )).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('rejects malformed IN list with garbage between values', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(evalPredicate("source_type IN ['news' garbage]", ev())).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('rejects IN list with unquoted value', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(evalPredicate("source_type IN [news]", ev())).toBe(false);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('accepts empty IN list (always false, no warning)', () => {
+    // An empty list is grammatically valid (no values to match) — operator
+    // explicitly disabled this clause. Returns false silently.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(evalPredicate("source_type IN []", ev())).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 });

@@ -95,26 +95,29 @@ function parseTierThresholds(md: string): TierThresholds {
   if (tierBlock === undefined) return { ...DEFAULT_THRESHOLDS };
 
   const result: TierThresholds = { ...DEFAULT_THRESHOLDS };
-  // Look for any tier lines (matched or not). Whitespace-tolerant around
-  // colons; en-dash, em-dash, and ASCII hyphen all accepted between bounds.
-  const tierLineRe = /^- (cold|warm|hot|on_fire)\s*:.*$/gm;
+  // Scan ALL bullet lines under "## Tier thresholds", not just lines that
+  // already match a known tier prefix. This way typos like `- warmm: 15-34`
+  // or missing-colon lines like `- cold 0-14` produce a warning the
+  // operator can act on, rather than being silently ignored.
+  const bulletRe = /^- ([^\n]+)$/gm;
+  // Whitespace-tolerant around colon; en-dash, em-dash, ASCII hyphen all
+  // accepted between bounds; `+` form means [N, Infinity].
   const rangeRe = /^- (cold|warm|hot|on_fire)\s*:\s*(\d+)\s*[–—-]\s*(\d+)\s*$/m;
   const plusRe = /^- (cold|warm|hot|on_fire)\s*:\s*(\d+)\s*\+\s*$/m;
 
-  for (const lineMatch of tierBlock.matchAll(tierLineRe)) {
-    const line = lineMatch[0];
-    const tier = lineMatch[1] as Tier;
+  for (const bulletMatch of tierBlock.matchAll(bulletRe)) {
+    const line = bulletMatch[0];
     const range = line.match(rangeRe);
     if (range) {
-      result[tier] = [parseInt(range[2], 10), parseInt(range[3], 10)];
+      result[range[1] as Tier] = [parseInt(range[2], 10), parseInt(range[3], 10)];
       continue;
     }
     const plus = line.match(plusRe);
     if (plus) {
-      result[tier] = [parseInt(plus[2], 10), Infinity];
+      result[plus[1] as Tier] = [parseInt(plus[2], 10), Infinity];
       continue;
     }
-    console.warn(`[scoring] tier line for "${tier}" did not parse; using default`);
+    console.warn(`[scoring] unrecognized tier-thresholds line (will use default for that tier): "${line.trim()}"`);
   }
 
   // Gap / overlap check for contiguity. Each next-lo should be exactly
@@ -154,10 +157,15 @@ function parseTierThresholds(md: string): TierThresholds {
  * Whitespace-tolerant: any whitespace around AND/OR is accepted (multi-space,
  * tab, newline). Whitespace inside quoted strings is preserved as content.
  *
- * String-aware: AND, OR, `[`, `]`, and `,` characters inside single-quoted
- * values are treated as content, not combinators or list separators. So
+ * String-aware: AND, OR, and `,` characters inside single-quoted values are
+ * treated as content, not combinators or list separators. So
  * `snippet CONTAINS 'foo AND bar'` parses as a single CONTAINS leaf, and
  * `IN ['a,b', 'c']` correctly produces the list `['a,b', 'c']`.
+ *
+ * Limitation: a value containing `]` cannot appear inside an `IN` list
+ * (the surrounding `[...]` regex is greedy through the first `]`). Values
+ * with apostrophes are also unrepresentable — there's no escape syntax in
+ * v1. Document at the rule definition.
  *
  * Failing closed: unsupported operators, malformed leaves, and unknown fields
  * all return `false` and emit a `console.warn` (so operators see the typo
@@ -191,9 +199,21 @@ interface EvCtx {
 
 function evalAndOr(s: string, ev: EvCtx): boolean {
   const orParts = splitTopLevel(s, 'OR');
-  if (orParts.length > 1) return orParts.some((p) => evalAndOr(p, ev));
+  if (orParts.length > 1) {
+    // Eager .map() before .some(): a short-circuit `.some()` would skip
+    // evaluating malformed branches whenever an earlier branch matches,
+    // hiding operator typos. Evaluate ALL branches so any malformed one
+    // throws and surfaces a warning via evalPredicate's try/catch.
+    const results = orParts.map((p) => evalAndOr(p, ev));
+    return results.includes(true);
+  }
   const andParts = splitTopLevel(s, 'AND');
-  if (andParts.length > 1) return andParts.every((p) => evalAndOr(p, ev));
+  if (andParts.length > 1) {
+    // Same reasoning as above — eager evaluation surfaces malformed branches
+    // even when an earlier branch already returned false.
+    const results = andParts.map((p) => evalAndOr(p, ev));
+    return results.every((r) => r);
+  }
   return evalLeaf(s.trim(), ev);
 }
 
@@ -267,9 +287,18 @@ function evalLeaf(s: string, ev: EvCtx): boolean {
   // IN ['a', 'b', ...]
   m = s.match(/^(\w+)\s+IN\s+\[([^\]]*)\]$/);
   if (m) {
+    const inner = m[2].trim();
+    // Validate the full list grammar before accepting. parseQuotedList alone
+    // would happily ignore garbage like `['news' bad]` or unquoted values
+    // like `[news]` — that lets a typo silently disable a rule. The regex
+    // requires: empty list OR one+ comma-separated quoted strings, with
+    // flexible whitespace around commas.
+    if (inner !== '' && !/^'[^']*'(\s*,\s*'[^']*')*$/.test(inner)) {
+      throw new Error(`malformed IN list (expected ['v1', 'v2', ...]): "[${m[2]}]"`);
+    }
     const fieldVal = pluckField(m[1], ev);
     if (typeof fieldVal !== 'string') return false;
-    const list = parseQuotedList(m[2]);
+    const list = parseQuotedList(inner);
     return list.includes(fieldVal);
   }
   // == '...'
