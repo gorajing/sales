@@ -242,9 +242,14 @@ export const routingAssignments = sqliteTable('routing_assignments', {
   // Stable rule key parsed from data/routing-rules.md (e.g. 'RR1'). NOT an FK —
   // rules live in Markdown, not the DB. Null when fallback/manual.
   matchedRuleKey: text('matched_rule_key'),
-  // Hash of the routing-rules.md content used to produce this assignment.
-  // Edits to routing rules → new hash → new assignment under the new rules
-  // without violating the unique index.
+  // Hash of the effective routing CONFIG used to produce this assignment:
+  // parsed rules (id, priority, predicate AST, owner_email) AND the
+  // normalized default owner email. The column name is historical
+  // ("rules" only) — the hash now also folds in the fallback owner so
+  // that changing DEFAULT_OWNER_EMAIL produces a new hash and recomputes
+  // existing fallback assignments rather than being silently sticky.
+  // Edits to any of those inputs → new hash → new assignment without
+  // violating the unique index. See lib/routing/rules.ts:hashRoutingConfig.
   routingRulesHash: text('routing_rules_hash').notNull(),
   // NOT NULL: every routing decision in v2 is tied to a specific lead score.
   // SQLite treats NULLs as distinct in unique indexes, which would let

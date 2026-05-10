@@ -12,9 +12,12 @@ import {
  * `matchedRuleKey` is non-null when `reason === 'rule_match'`, null when
  * `reason === 'fallback_default'`. The unique index on
  * `(account_id, score_id, routing_rules_hash)` is what makes route()
- * idempotent — recomputing under the same rules returns the existing row
- * via the catch-and-reselect path; recomputing under edited rules creates
- * a fresh row because the hash differs.
+ * idempotent — recomputing under the **same effective routing config**
+ * (same parsed rules AND same normalized default owner) returns the
+ * existing row via the catch-and-reselect path; recomputing under edited
+ * rules OR a changed default owner creates a fresh row because the hash
+ * differs. See `hashRoutingConfig` in `./rules.ts` for what the hash
+ * covers and why the default email is included.
  */
 export interface RouteResult {
   assignmentId: string;
@@ -24,7 +27,10 @@ export interface RouteResult {
   /** Stable parsed-from-Markdown key (e.g. 'RR1'). Null on fallback. */
   matchedRuleKey: string | null;
   reason: 'rule_match' | 'fallback_default';
-  /** Hash of the parsed routing-rules.md semantics used for this decision. */
+  /** Hash of the effective routing config (parsed rules + normalized
+   *  default owner email) used for this decision. The schema column name
+   *  is `routing_rules_hash` for historical reasons; it now covers the
+   *  fallback owner too. */
   routingRulesHash: string;
 }
 
@@ -63,10 +69,14 @@ const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  *      and the existing row is returned, making route() idempotent.
  *
  * Idempotency behavior:
- *   - Calling route() twice with the same (accountId, scoreId, rulesMd):
- *     second call returns the existing assignment.
- *   - Calling route() with the same scoreId but edited rulesMd: NEW hash →
- *     NEW assignment. Both rows survive (the unique index includes the hash).
+ *   - Calling route() twice with the same (accountId, scoreId, rulesMd,
+ *     defaultOwnerEmail): second call returns the existing assignment.
+ *   - Calling route() with the same scoreId but edited rulesMd OR a
+ *     changed defaultOwnerEmail: NEW hash → NEW assignment. Both rows
+ *     survive (the unique index includes the hash). Folding the default
+ *     into the hash is intentional — it ensures that changing
+ *     DEFAULT_OWNER_EMAIL propagates to existing fallback assignments
+ *     on the next recompute instead of being silently sticky.
  *
  * Failure modes (all leave the DB unchanged):
  *   - RoutingRuleParseError: rules file malformed.

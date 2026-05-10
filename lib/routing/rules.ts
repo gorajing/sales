@@ -30,16 +30,20 @@ import type { Tier } from '../scoring/rules';
  *      (`firmographic_sze`) being silently always-false.
  *
  *   3. **Hash over parsed semantics, not raw markdown.** hashRoutingRules
- *      JSON-encodes the array of parsed rules (id, priority, predicate
- *      source string, ownerEmail) and hashes that. Comment-only or
- *      whitespace-only edits don't churn assignments; predicate or
- *      owner_email edits do. (We hash the predicate *source string*, not
- *      the AST, so hash stability doesn't depend on AST representation
- *      decisions that may change between revisions.)
+ *      JSON-encodes (rule id, priority, predicate AST, ownerEmail) and
+ *      hashes that. Comment-only, whitespace-only, AND predicate-internal
+ *      whitespace edits don't churn assignments; semantic predicate edits
+ *      and owner_email edits do. (We hash the AST rather than the source
+ *      string, so lexical noise — extra spaces around operators, etc. —
+ *      doesn't invalidate downstream assignments.) For route()'s
+ *      idempotency, use hashRoutingConfig(rules, defaultOwnerEmail)
+ *      below — it folds the fallback owner into the hash so that
+ *      changing DEFAULT_OWNER_EMAIL invalidates fallback assignments.
  *
- *   4. **Deterministic tie-break.** Rules are sorted by (priority ASC, id
- *      ASC). Two rules with the same priority always evaluate in the same
- *      order regardless of authoring order in the file.
+ *   4. **Deterministic numeric tie-break.** Rules are sorted by
+ *      (priority ASC, numeric id suffix ASC). So RR2 beats RR10 when
+ *      priorities tie — operator-intuitive rather than lexicographic
+ *      (where '1' < '2' would silently re-order policy past RR9).
  *
  *   5. **owner_email normalized.** Trimmed and lower-cased at parse time
  *      (so `AE@X.COM` and `ae@x.com` are the same router). A basic shape
@@ -63,9 +67,12 @@ type Field = (typeof FIELDS)[number];
  *  tier literal (`'hots'`) silently becomes a dead rule otherwise. */
 const TIER_VALUES = new Set(['cold', 'warm', 'hot', 'on_fire']);
 
-/** Normalizes an owner email to its canonical form (trimmed + lowercased).
- *  Throws when the candidate doesn't look like an email. Shared between the
- *  rules parser and route(), so both layers reject the same malformations. */
+/** Shape regex for a routing owner email: <local>@<host>.<tld>, no
+ *  whitespace. The check is intentionally loose; full RFC 5322 is out of
+ *  scope. Both this file and route() apply the same check (route() carries
+ *  its own copy keyed to the default owner email; keeping the regexes
+ *  textually identical is a small redundancy that lives until we have a
+ *  routing-utils module worth extracting). */
 const EMAIL_SHAPE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** Discriminated union AST for predicates. Evaluator walks this; can't fail. */

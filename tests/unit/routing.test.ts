@@ -122,10 +122,10 @@ describe('route', () => {
     expect(db.select().from(schema.routingAssignments).all()).toHaveLength(1);
   });
 
-  it('tie-breaks equal-priority matches deterministically by id ASC', async () => {
+  it('tie-breaks equal-priority matches deterministically by numeric id ASC', async () => {
     // Two rules with the same priority, both matching on_fire.
     // The first listed in the file (in authoring order) is RR2; tie-break
-    // must still pick RR1 because we sort by (priority, id) regardless.
+    // must still pick RR1 because we sort by (priority, numericIdSuffix).
     const TIED_MD = `
 ## RR2 — Same priority B
 - priority: 10

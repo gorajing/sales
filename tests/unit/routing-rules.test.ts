@@ -56,7 +56,7 @@ describe('parseRoutingRules — happy path', () => {
     expect(rules.map((r) => r.id)).toEqual(['RR1', 'RR3']);
   });
 
-  it('tie-breaks equal-priority rules by id ASC (deterministic)', () => {
+  it('tie-breaks equal-priority rules by numeric id ASC (deterministic)', () => {
     const sameP = `
 ## RR2 — B
 - priority: 20
