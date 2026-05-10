@@ -98,10 +98,14 @@ function fingerprint(
  *   3. For each (evidence, rule) pair where the predicate matches, decay
  *      the rule's weight by elapsed time and append a rationale item.
  *      Sum is fractional; round at the end for integer storage.
- *   4. Compute the fingerprint over (score, tier, rationale, rules-md).
+ *   4. Compute the fingerprint over (score, tier, matched-pairs,
+ *      parsed-rules-canonical-hash).
  *   5. If the latest row for this account has the same fingerprint,
- *      return it (deduped). Otherwise insert; on unique-index race, catch
- *      and re-select the winner.
+ *      short-circuit and return it. Otherwise insert a new row.
+ *
+ * Single-process SQLite assumption: the latest-fingerprint short-circuit
+ * is the only dedupe gate. Multi-process deployments would need additional
+ * concurrency control (sequence column or chain indicator in fingerprint).
  *
  * `now` is injectable for tests so date-driven decay is deterministic.
  */

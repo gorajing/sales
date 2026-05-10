@@ -259,7 +259,7 @@ describe('computeScore', () => {
     expect(db.select().from(schema.leadScores).all()).toHaveLength(2);
   });
 
-  it('inserts a new row when only the rules change (rules hash in fingerprint)', async () => {
+  it('inserts a new row when only the rules change (parsed-rules hash in fingerprint)', async () => {
     // Same evidence, same NOW — but a threshold tweak in the rules markdown
     // should still invalidate the fingerprint (so downstream tier-promotion
     // alerts can fire when an operator edits thresholds).
@@ -309,7 +309,7 @@ describe('computeScore', () => {
     expect(b.priorTier).toBe('warm');
   });
 
-  // ===== Race-safe insert (catch-and-reselect) ============================
+  // ===== Idempotency + dedupe ============================================
 
   it('SELECT-hit dedupe returns the matched scoreId without inserting', async () => {
     // The latest-fingerprint-match short-circuit. With single-process
