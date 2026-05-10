@@ -103,6 +103,24 @@ This pattern should propagate. When new LLM-emitted data enters the system — a
 
 ---
 
+## Deployment assumptions (read before scaling out)
+
+The architecture is designed for **single-process SQLite** running on one operator's machine or one Node server. A handful of concurrency-correctness decisions exploit that assumption explicitly:
+
+1. **Scoring recompute idempotency.** `lib/scoring/score.ts` uses a "latest-row-fingerprint short-circuit" — if the most recent `lead_scores` row for an account has the same fingerprint as the new computation, it returns that row instead of inserting. The earlier draft had a UNIQUE `(account_id, fingerprint)` index as a multi-writer race defense, but that index blocked legitimate state recurrence (cold → warm → cold returning to cold should write a new row, not collide with the original). The index was dropped because single-process SQLite serializes transactions, so concurrent recomputes in this Node process can't race past each other — the second call sees the first's committed row in its SELECT and short-circuits.
+2. **Signal ingest idempotency.** `lib/signals/ingest.ts` likewise relies on transaction serialization plus a dedupe-key column to guarantee at-most-once insertion of the same event.
+3. **Latest-row ordering.** Both layers use SQLite's `rowid DESC` as the "most recently inserted" oracle — SQLite guarantees `rowid` is monotonically incrementing per insert within a table.
+
+**These assumptions break if you move to:**
+
+- **Multiple Node processes pointing at the same SQLite file.** Two processes can each start a transaction, both miss the dedupe SELECT, both insert, and SQLite serializes the commits without rejecting either. The scoring layer would need a real concurrency strategy: a sequence column per account, or a chain indicator in the fingerprint that includes the previous row's id (so state recurrence under a new prior produces a new fingerprint).
+- **Postgres or any networked database.** Same problem at the database layer; the same fixes apply.
+- **Serverless / Edge runtimes.** Each invocation is a fresh process. Two near-simultaneous requests run as independent processes. Same fix list.
+
+This isn't a bug to defer — it's a *deployment constraint*. The v2 design is correct for its target. If the operator moves it beyond that target, the concurrency layer needs to be redesigned before the move, not after the first race surfaces.
+
+---
+
 ## What this is not
 
 It is not a CRM. v1 does not authenticate users, sync to Salesforce, send email through SMTP, or run as a multi-tenant SaaS; v2 adds lead scoring, routing, alerts, and an engagement loop, but still does not send outreach, sync to a CRM, authenticate users, or run multi-tenant. The decisions above are about what makes the *generation and audit* loop trustworthy. Outreach sending, CRM sync, auth/RBAC, and team-multi-tenant workflows are explicitly out of scope for both versions — the existing CRMs do those well, and replicating them would crowd out the parts that are actually novel.
