@@ -86,9 +86,11 @@ function parseMediaType(header: string | null): string | null {
 
 /**
  * Read up to `maxBytes` from the request body, bailing on the first chunk
- * that crosses the cap. Caps peak allocation at roughly (maxBytes + one
- * chunk) regardless of whether Content-Length is present or honest — a
- * stronger DoS guarantee than buffering the whole body and checking after.
+ * that crosses the cap. Bounds peak memory to roughly `2 * maxBytes`
+ * (the streamed Uint8Array chunks plus the final Buffer.concat into a
+ * UTF-8 string), regardless of whether Content-Length is present or
+ * honest — a stronger DoS guarantee than buffering the whole body and
+ * checking after, where peak memory is unbounded.
  *
  * Duplicated from app/api/signals/route.ts. The two HTTP boundaries share
  * this byte-accurate streaming pattern; if a third caller wants the same
@@ -123,18 +125,33 @@ async function readBoundedBody(
 
 /**
  * Format an unknown thrown value into a server-side log line that preserves
- * stack + cause when present and is robust to non-Error throws. Never used
- * for response bodies — those stay sanitized to `{error: 'internal'}`.
+ * stack AND `cause` (recursively) when present, and is robust to non-Error
+ * throws including `undefined`, functions, and symbols (where
+ * `JSON.stringify` returns `undefined` rather than throwing).
+ *
+ * Never used for response bodies — those stay sanitized to
+ * `{error: 'internal'}`. This is the only place internal failure details
+ * should land.
  */
 function formatError(err: unknown): string {
   if (err instanceof Error) {
-    return err.stack ?? `${err.name}: ${err.message}`;
+    const head = err.stack ?? `${err.name}: ${err.message}`;
+    if (err.cause !== undefined) {
+      return `${head}\n  caused by: ${formatError(err.cause)}`;
+    }
+    return head;
   }
+  // JSON.stringify can return `undefined` (not throw) for `undefined`,
+  // functions, and symbols — guard that path explicitly so we never
+  // end up logging the literal string "undefined" from the stringify
+  // helper.
   try {
-    return JSON.stringify(err);
+    const j = JSON.stringify(err);
+    if (j !== undefined) return j;
   } catch {
-    return String(err);
+    /* JSON.stringify throws on BigInts and circular refs — fall through */
   }
+  return String(err);
 }
 
 export async function POST(req: Request) {
