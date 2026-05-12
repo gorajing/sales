@@ -46,7 +46,12 @@ export function ScoreRationale({
       {items.length === 0 ? (
         <p className="text-slate-400">No matching signals.</p>
       ) : (
-        <ul className="space-y-1">
+        // Bound the rationale's visible height. The panel renders above the
+        // sub-nav (Evidence/Contacts/Sequences) on /accounts/[id], and an
+        // unbounded list of matched rules would push the tabs below the
+        // fold on mobile. max-h-64 + overflow-y-auto keeps the panel a
+        // predictable size; the operator can scroll within it.
+        <ul className="space-y-1 max-h-64 overflow-y-auto pr-1">
           {items.map((it) => (
             // (rule_id, evidence_id) is unique within a rationale — the
             // scoring engine appends one row per matched (rule, evidence)

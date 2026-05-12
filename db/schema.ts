@@ -1,6 +1,18 @@
 import { sqliteTable, text, integer, uniqueIndex, index } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
+/**
+ * Shared enums exported as both runtime arrays (for parser whitelists,
+ * select-option lists, etc.) and types (for narrowing at component
+ * boundaries). Add new members in one place; both the type and the
+ * column constraint stay in sync.
+ */
+export const SIGNAL_TYPES = [
+  'none', 'intent', 'engagement', 'firmographic',
+  'technographic', 'trigger_event',
+] as const;
+export type SignalType = (typeof SIGNAL_TYPES)[number];
+
 export const accounts = sqliteTable('accounts', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
@@ -52,10 +64,7 @@ export const evidence = sqliteTable('evidence', {
            // (form-fill-as-demo-request) does NOT match CRM upserts.
            'crm_record', 'engagement_event'],
   }).notNull(),
-  signalType: text('signal_type', {
-    enum: ['none', 'intent', 'engagement', 'firmographic',
-           'technographic', 'trigger_event'],
-  }).notNull().default('none'),
+  signalType: text('signal_type', { enum: SIGNAL_TYPES }).notNull().default('none'),
   snippet: text('snippet').notNull(),
   extractedFact: text('extracted_fact').notNull(),
   extractionStatus: text('extraction_status', {

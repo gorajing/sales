@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import type { SignalType } from '@/db/schema';
 import { truncate } from './format';
 
 /**
@@ -19,11 +20,14 @@ export function SignalRow({
 }: {
   capturedAt: string;
   sourceType: string;
-  /** schema.evidence.signalType is NOT NULL DEFAULT 'none'; the column
-   *  never carries null, so the prop type stays string. The Recent-signals
-   *  query in lib/inbound/queries.ts already filters `!= 'none'`, so this
-   *  value will be one of the non-'none' enum members at render time. */
-  signalType: string;
+  /** schema.evidence.signalType is NOT NULL DEFAULT 'none', so the column
+   *  always carries a SignalType. The Recent-signals query in
+   *  lib/inbound/queries.ts already filters `!= 'none'`, so in practice
+   *  the value here is a non-'none' member. Typing it as the full enum
+   *  union keeps the call site flexible (no manual narrowing required)
+   *  and the 'none' fallback below catches a future caller that bypasses
+   *  the filter. */
+  signalType: SignalType;
   snippet: string;
   accountId: string;
   /** Display label for the account (domain or name). Null if unknown. */
@@ -34,7 +38,9 @@ export function SignalRow({
     <tr className="border-b">
       <td className="py-1 px-2 text-xs text-slate-500 whitespace-nowrap">{ts}</td>
       <td className="py-1 px-2 font-mono text-xs">{sourceType}</td>
-      <td className="py-1 px-2 font-mono text-xs text-slate-500">{signalType}</td>
+      <td className="py-1 px-2 font-mono text-xs text-slate-500">
+        {signalType === 'none' ? <span className="text-slate-300">—</span> : signalType}
+      </td>
       <td className="py-1 px-2 text-xs">
         {accountLabel ? (
           <Link href={`/accounts/${accountId}`} className="text-blue-700 hover:underline">

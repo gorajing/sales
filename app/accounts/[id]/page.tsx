@@ -21,8 +21,14 @@ export default async function AccountPage({ params }: { params: Promise<{ id: st
   // `name = domain` as a placeholder until the operator renames it
   // (lib/signals/ingest.ts). Suppressing the duplicate subtitle keeps the
   // header from showing "acme.com" twice — once as the title and once as
-  // the subtitle.
-  const showDomainSubtitle = account.domain && account.domain !== account.name;
+  // the subtitle. The compare is case-insensitive + trimmed so manual
+  // renames like "Acme.com" (capitalized) over a normalized lowercase
+  // domain still match.
+  const normalize = (s: string) => s.trim().toLowerCase();
+  const showDomainSubtitle =
+    account.domain != null
+    && account.domain !== ''
+    && normalize(account.domain) !== normalize(account.name);
 
   return (
     <main>
