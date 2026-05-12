@@ -165,19 +165,28 @@ describe('POST /api/alerts/:id/ack — error responses', () => {
     expect(res.status).toBe(415);
   });
 
-  it('returns 413 when body exceeds MAX_BODY_BYTES even without Content-Length', async () => {
-    // Regression guard for the round-1 BLOCKER: the original ack route
-    // used `req.text()` + UTF-16 length check, which would buffer the
-    // entire payload before noticing the cap. The fix swapped to the
-    // streaming `readBoundedBody` helper that bails on the first chunk
-    // that crosses the byte cap. Verify by sending a 64KB body with
-    // Content-Length omitted (the cap should still fire).
+  it('returns 413 on byte-overrun even when UTF-16 string length is under the cap', async () => {
+    // Regression guard for the EXACT round-1 BLOCKER, not just
+    // "body too big." The old code computed `bodyText.length` —
+    // UTF-16 code units, not bytes — so a multi-byte payload could
+    // bypass the cap. This test sends a body whose UTF-8 byte length
+    // EXCEEDS MAX_BODY_BYTES (=4096) but whose UTF-16 char length is
+    // WELL UNDER 4096. The fixed streaming reader catches it on
+    // bytes; the old buffer-then-check-length code would have let it
+    // through. (An ASCII 64KB body returns 413 under both
+    // implementations, so it wouldn't actually pin the regression.)
     const { alertId } = await seed();
-    const huge = 'x'.repeat(64 * 1024);
+    // '日' is 3 bytes UTF-8 per char, 1 UTF-16 code unit per char.
+    // 2000 chars → 6000 bytes UTF-8, ~2000 UTF-16 code units.
+    const multiByte = '日'.repeat(2000);
+    const body = JSON.stringify({ by: 'jin@example.com', noise: multiByte });
+    expect(body.length).toBeLessThan(4096);              // under UTF-16 cap
+    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(4096); // over byte cap
+
     const req = new Request(`http://x/api/alerts/${alertId}/ack`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },  // no Content-Length
-      body: JSON.stringify({ by: 'jin@example.com', noise: huge }),
+      body,
     });
     const res = await ackPost(req, { params: Promise.resolve({ id: alertId }) });
     expect(res.status).toBe(413);
