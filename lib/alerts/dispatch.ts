@@ -276,15 +276,13 @@ export async function dispatchEngagementSpike(
 ): Promise<DispatchResult | null> {
   // Bound the recent-evidence query to the rolling window.
   //
-  // As of the round-2 fix in lib/signals/ingest.ts, ingest normalizes
-  // captured_at to UTC-Z form before persisting, so for rows written
-  // through the webhook a lex compare against `since` would already be
-  // chronological. The `strftime('%Y-%m-%dT%H:%M:%fZ', ...)` normalization
-  // is kept here as defense-in-depth against legacy rows or any future
-  // code path that bypasses ingestSignal and writes a raw offset string.
-  // strftime returns the row's captured_at re-rendered as UTC-Z, so the
-  // compare against the UTC `since` cutoff is always chronological
-  // regardless of stored form. Matches the same pattern in
+  // ingestSignal normalizes captured_at to UTC-Z before persisting, so
+  // for rows written through the webhook a lex compare against `since`
+  // is already chronological. The `strftime('%Y-%m-%dT%H:%M:%fZ', ...)`
+  // call here is defense-in-depth against legacy rows or any future
+  // code path that bypasses ingestSignal and writes a raw offset
+  // string — strftime re-renders the value as UTC-Z so the compare
+  // stays chronological regardless of stored form. Same pattern as
   // lib/inbound/queries.ts.
   const since = new Date(now.getTime() - windowHours * 3600 * 1000).toISOString();
   const recent = db.select().from(schema.evidence)
