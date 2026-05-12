@@ -56,11 +56,13 @@ export async function sendSlack(
     }
   }
   // 5-second budget. Slack typically responds in <500ms; a multi-second
-  // hang here would block the recompute orchestrator's response. The
-  // dispatcher's reserve has already committed; if the send times out,
-  // the alert row sits with empty channelsSentJson and the cooldown
-  // blocks any duplicate (which is exactly the "reserved but didn't
-  // deliver" state the Task 2.1 reserve-then-send pattern designed for).
+  // hang here would block the recompute orchestrator's response. On
+  // timeout, AbortSignal causes fetch() to throw — the dispatcher's
+  // per-channel catch records `{channel: 'slack', ok: false, detail}`
+  // and the step-3 update persists that to channelsSentJson. The
+  // cooldown is already taken, so a follow-up dispatch for the same
+  // key is correctly skipped (verified by the failed-delivery
+  // cooldown test in alert-dispatch.test.ts).
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

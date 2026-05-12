@@ -57,8 +57,9 @@ import type { ChannelDelivery } from '@/lib/alerts/types';
  *          the operator immediately knows "fix env / files," not
  *          "investigate code."
  *
-After score and routing commit, this route invokes the alert dispatchers
- * (`dispatchTierPromotion`, `dispatchEngagementSpike` from
+ *
+ * After score and routing commit, this route invokes the alert
+ * dispatchers (`dispatchTierPromotion`, `dispatchEngagementSpike` from
  * `lib/alerts/dispatch.ts`) as a best-effort side effect. Dispatch
  * failures are caught + logged and never affect the response status —
  * alerts are a side effect, not the work. Each dispatched alert's
