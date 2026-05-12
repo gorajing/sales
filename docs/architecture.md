@@ -126,6 +126,25 @@ This isn't a bug to defer — it's a *deployment constraint*. The v2 design is c
 
 ---
 
+## Deployment security (read before exposing to the network)
+
+The v2 surface splits into two trust zones with deliberately different auth stories:
+
+1. **External HTTP endpoints** are gated by environment-variable secrets:
+   - `POST /api/signals` requires `SIGNAL_WEBHOOK_SECRET` (presented via `X-Webhook-Secret`).
+   - `POST /api/scoring/recompute` requires `INTERNAL_API_SECRET` (presented via `X-Internal-Secret`).
+   - `POST /api/alerts/:id/ack` and `GET /api/alerts` require `INTERNAL_API_SECRET`.
+
+   All comparisons are timing-safe (SHA-256 → equal-length compare via `node:crypto.timingSafeEqual`). When `NODE_ENV === 'production'`, the corresponding secret MUST be set or the route returns 503 misconfigured (fail safe, not fail open). In dev (`NODE_ENV !== 'production'`) the routes run permissively when the secret is unset, but ingested evidence under the permissive `/api/signals` path lands as `pending_audit` rather than `verified` — so even a wide-open dev webhook can't bypass the audit critic.
+
+2. **UI pages and their server actions are NOT gated by env-var secrets.** `/inbound`, `/accounts/[id]`, `/alerts`, and the Acknowledge server action on the alerts page rely on **deploy-time auth** — typically reverse-proxy + SSO, or simply localhost-only when an operator runs the tool on their machine. Putting an `X-Internal-Secret`-style check on a page would require embedding the secret in the rendered HTML or forcing the operator to manually attach headers to every browser request; neither is workable.
+
+   The server action receives form data (alert id, acknowledger identity) which an authenticated operator could tamper with — this is acceptable because the operator is already inside the trust boundary. The `acknowledgeAlert` helper independently validates the id-shape regex so SQL-injection-shaped form values return cleanly as `not_found`.
+
+The asymmetry is intentional: external callers (cron jobs, partner webhooks, Slack integrations) hit the secret-gated HTTP endpoints; humans hit the deploy-gated pages. A multi-user production deployment would replace deploy-time auth with per-user auth at the proxy/SSO layer; the in-process code stays the same.
+
+---
+
 ## What this is not
 
 It is not a CRM. v1 does not authenticate users, sync to Salesforce, send email through SMTP, or run as a multi-tenant SaaS; v2 adds lead scoring, routing, alerts, and an engagement loop, but still does not send outreach, sync to a CRM, authenticate users, or run multi-tenant. The decisions above are about what makes the *generation and audit* loop trustworthy. Outreach sending, CRM sync, auth/RBAC, and team-multi-tenant workflows are explicitly out of scope for both versions — the existing CRMs do those well, and replicating them would crowd out the parts that are actually novel.

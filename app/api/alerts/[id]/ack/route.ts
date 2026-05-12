@@ -1,7 +1,12 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { acknowledgeAlert } from '@/lib/alerts/ack';
-import { requireInternalSecret, parseMediaType, formatError } from '@/lib/alerts/http';
+import {
+  requireInternalSecret,
+  parseMediaType,
+  readBoundedBody,
+  formatError,
+} from '@/lib/alerts/http';
 
 /**
  * POST /api/alerts/:id/ack — mark an alert as acknowledged.
@@ -65,17 +70,22 @@ export async function POST(
     }
   }
 
-  let bodyText: string;
-  try {
-    bodyText = await req.text();
-  } catch {
+  // Stream-bounded body read: bail on the first chunk that crosses the
+  // cap so peak allocation is bounded even when Content-Length lies.
+  // Byte-accurate (vs UTF-16 code units, which would let a multi-byte
+  // payload bypass the cap).
+  const readResult = await readBoundedBody(req, MAX_BODY_BYTES);
+  if (!readResult.ok) {
+    if (readResult.reason === 'too_large') {
+      return NextResponse.json(
+        { error: 'payload_too_large', detail: `body exceeds ${MAX_BODY_BYTES} bytes` },
+        { status: 413 },
+      );
+    }
     return NextResponse.json({ error: 'read_error' }, { status: 400 });
   }
-  if (bodyText.length > MAX_BODY_BYTES) {
-    return NextResponse.json({ error: 'payload_too_large' }, { status: 413 });
-  }
   let raw: unknown;
-  try { raw = JSON.parse(bodyText); } catch {
+  try { raw = JSON.parse(readResult.text); } catch {
     return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
   }
   const parsed = Body.safeParse(raw);

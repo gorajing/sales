@@ -25,10 +25,13 @@ import type { ChannelDelivery } from '@/lib/alerts/types';
  *
  * Trust boundary:
  *   - This page (and the server action below) does NOT enforce
- *     `INTERNAL_API_SECRET`. The page is gated by deploy-time auth
- *     (reverse proxy, SSO, etc.) per `docs/architecture.md`. The
- *     external `POST /api/alerts/:id/ack` route DOES enforce the
- *     secret, for external integrations.
+ *     `INTERNAL_API_SECRET`. See "Deployment security" in
+ *     docs/architecture.md for the full asymmetry: external HTTP
+ *     endpoints are secret-gated; UI pages rely on deploy-time auth
+ *     (reverse proxy, SSO, localhost-only). The external
+ *     `POST /api/alerts/:id/ack` route IS secret-gated for
+ *     integrations; this page's server action is not, because
+ *     embedding the secret in the rendered HTML is not workable.
  *   - The server action receives form data which CAN be tampered with
  *     (any operator who can reach the page can submit any alertId).
  *     This is acceptable because the page is already gated; an

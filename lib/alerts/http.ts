@@ -59,6 +59,44 @@ export function requireInternalSecret(
   return null;
 }
 
+/**
+ * Read up to `maxBytes` from the request body, bailing on the first chunk
+ * that crosses the cap. Peak memory is bounded at a small constant
+ * multiple of `maxBytes`, regardless of whether Content-Length is
+ * present or honest. Byte-accurate; counts bytes, not UTF-16 code units.
+ *
+ * Duplicated from app/api/signals/route.ts and
+ * app/api/scoring/recompute/route.ts. With three HTTP boundaries now
+ * needing the same primitive, this is the time to consolidate
+ * (recompute's local copy noted "extract on third caller"). For now
+ * the alerts endpoints use this version; recompute can migrate in a
+ * follow-up cleanup so this commit stays scoped to /alerts.
+ */
+export async function readBoundedBody(
+  req: Request,
+  maxBytes: number,
+): Promise<{ ok: true; text: string } | { ok: false; reason: 'too_large' | 'read_error' }> {
+  const reader = req.body?.getReader();
+  if (!reader) return { ok: true, text: '' };
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { ok: false, reason: 'too_large' };
+      }
+      chunks.push(value);
+    }
+  } catch {
+    return { ok: false, reason: 'read_error' };
+  }
+  return { ok: true, text: Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8') };
+}
+
 /** Format an unknown thrown value into a server-side log line. Same
  *  cycle + depth guards as the recompute route's helper. */
 const MAX_CAUSE_DEPTH = 4;
