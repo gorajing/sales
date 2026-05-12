@@ -8,6 +8,8 @@ import { db, schema } from '@/db';
 import { computeScore } from '@/lib/scoring/score';
 import { route as routeAccount } from '@/lib/routing/route';
 import { parseRoutingRules, RoutingRuleParseError } from '@/lib/routing/rules';
+import { dispatchTierPromotion, dispatchEngagementSpike } from '@/lib/alerts/dispatch';
+import type { ChannelDelivery } from '@/lib/alerts/types';
 
 /**
  * POST /api/scoring/recompute — recompute score + routing for one account.
@@ -333,6 +335,89 @@ export async function POST(req: Request) {
   try {
     const score = await computeScore(accountId, scoringMd);
     const assignment = await routeAccount(accountId, score.scoreId, routingMd, defaultOwner);
+
+    // -----------------------------------------------------------------
+    // (10) BEST-EFFORT ALERT DISPATCH.
+    //
+    // Critical contract: alerts are a side effect, not the work. A failed
+    // alert (network, disk, rendering) must NOT fail the recompute — the
+    // score row and routing assignment are already committed by this
+    // point, and the operator depending on /inbound or /accounts/[id] to
+    // see the result must not be blocked by a Slack outage.
+    //
+    // Each dispatch is wrapped in its own try/catch. The dispatchers
+    // themselves already isolate channel failures into ChannelDelivery
+    // {ok: false}, so the outer catch only fires for truly unexpected
+    // throws — e.g. SQLITE_BUSY on the reserve, a JS bug. We log + drop.
+    //
+    // tier_promotion is gated on score.inserted: if computeScore hit
+    // the latest-fingerprint dedupe path, the scoreId is the EXISTING
+    // row's id and a tier transition can't have happened this call.
+    // detectTierPromotion would also return null in that case (same
+    // priorTier === tier), but the explicit gate makes the intent
+    // visible and avoids the trip into the dispatcher's reserve step.
+    //
+    // engagement_spike is NOT gated on score.inserted. Engagement-like
+    // signals (Outreach opens, GitHub stars) often don't match any
+    // scoring rule and therefore don't move the fingerprint — but they
+    // ARE the kind of signal the spike alert exists for. The per-day
+    // cooldown key prevents duplicate notifications regardless.
+    //
+    // Response shape: each successful dispatch contributes
+    // `{trigger, alertId, channelsSent}` — channelsSent is the actual
+    // per-channel disposition (channel='file' on fallback, ok=false on
+    // delivery failure). This avoids overstating success: a caller
+    // seeing alerts[0].channelsSent[0].ok=false knows the alert
+    // reserved but the channel didn't deliver.
+    // -----------------------------------------------------------------
+    interface AlertResponseEntry {
+      trigger: 'tier_promotion' | 'engagement_spike';
+      alertId: string;
+      channelsSent: ChannelDelivery[];
+    }
+    const alertResults: AlertResponseEntry[] = [];
+
+    if (score.inserted) {
+      try {
+        const tp = await dispatchTierPromotion(
+          accountId, score.priorTier, score.tier, score.scoreId,
+        );
+        if (tp) {
+          alertResults.push({
+            trigger: 'tier_promotion',
+            alertId: tp.alertId,
+            channelsSent: tp.channelsSent,
+          });
+        }
+      } catch (err) {
+        // Dispatcher threw before recording anything (rare — typically
+        // SQLITE_BUSY on the reserve). Recompute continues; the alert
+        // is forgotten. Log loudly so operators can investigate.
+        console.error(
+          `[recompute] tier_promotion dispatch threw for accountId=${accountId}, ` +
+          `scoreId=${score.scoreId}; recompute continues without this alert.`,
+          formatError(err),
+        );
+      }
+    }
+
+    try {
+      const sp = await dispatchEngagementSpike(accountId);
+      if (sp) {
+        alertResults.push({
+          trigger: 'engagement_spike',
+          alertId: sp.alertId,
+          channelsSent: sp.channelsSent,
+        });
+      }
+    } catch (err) {
+      console.error(
+        `[recompute] engagement_spike dispatch threw for accountId=${accountId}; ` +
+        `recompute continues without this alert.`,
+        formatError(err),
+      );
+    }
+
     return NextResponse.json({
       scoreId: score.scoreId,
       score: score.score,
@@ -344,7 +429,7 @@ export async function POST(req: Request) {
       ownerEmail: assignment.ownerEmail,
       matchedRuleKey: assignment.matchedRuleKey,
       reason: assignment.reason,
-      alerts: [],  // populated in Task 2.2
+      alerts: alertResults,
     }, { status: 200 });
   } catch (err) {
     if (err instanceof RoutingRuleParseError) {

@@ -1,6 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as schema from '../../db/schema';
 
+// Force renderAlertText() to fall back to its deterministic template
+// instead of shelling out to the Claude CLI. Integration tests must not
+// depend on local Claude auth and must complete in milliseconds, not the
+// 30s timeout window spawnClaude carries for real LLM calls. The
+// deterministic fallback produces the same text shape every time, which
+// is what these tests assert against (substrings + structure, not the
+// LLM's specific wording).
+vi.mock('../../lib/claude/run', () => ({
+  spawnClaude: vi.fn(() => Promise.reject(new Error('test mock — force deterministic fallback'))),
+  RateLimitError: class extends Error {},
+  ClaudeError: class extends Error {},
+}));
+
 vi.mock('@/db', async () => {
   const { default: Database } = await import('better-sqlite3');
   const { drizzle } = await import('drizzle-orm/better-sqlite3');
@@ -36,7 +49,12 @@ beforeEach(async () => {
   delete ENV.INTERNAL_API_SECRET;
   delete ENV.NODE_ENV;
 
+  // Delete in FK-dependency order: alerts → routing_assignments →
+  // lead_scores → evidence → contacts → accounts. With alerts now
+  // referencing accounts (Task 2.2 wiring), deleting accounts first
+  // hits a FOREIGN KEY constraint and aborts beforeEach.
   const { db, schema: s } = await import('@/db');
+  db.delete(s.alerts).run();
   db.delete(s.routingAssignments).run();
   db.delete(s.leadScores).run();
   db.delete(s.evidence).run();
@@ -100,7 +118,18 @@ describe('POST /api/scoring/recompute — happy path', () => {
     expect(body.ownerEmail).toBeTruthy();
     expect(['rule_match', 'fallback_default']).toContain(body.reason);
     expect(body.rationale).toBeInstanceOf(Array);
-    expect(body.alerts).toEqual([]);  // populated in Task 2.2
+    expect(body.alerts).toBeInstanceOf(Array);
+    // Task 2.2 wires alert dispatch. One intent signal → R1@20 → warm tier.
+    // First-ever non-cold score → tier_promotion alert. Specific assertions
+    // about alert dispatch behavior live in the "alert dispatch" suite below;
+    // the happy path just verifies the field is the right shape.
+    for (const a of body.alerts as Array<unknown>) {
+      expect(a).toMatchObject({
+        trigger: expect.any(String),
+        alertId: expect.any(String),
+        channelsSent: expect.any(Array),
+      });
+    }
     expect(body.inserted).toBe(true);  // first recompute writes a new score row
   });
 
@@ -318,5 +347,245 @@ describe('POST /api/scoring/recompute — internal errors are sanitized', () => 
     expect(rec.status).toBe(500);
     const body = await rec.json();
     expect(body.error).toBe('internal');
+  });
+});
+
+// ============================================================================
+// Task 2.2: alert dispatch integration. The dispatcher logic is unit-tested
+// in tests/unit/alert-dispatch.test.ts; these tests verify the orchestrator
+// correctly invokes the dispatchers, returns honest per-channel disposition
+// in the response payload, and never lets an alert failure corrupt the
+// score/routing recompute path.
+// ============================================================================
+
+describe('POST /api/scoring/recompute — alert dispatch (best-effort)', () => {
+  it('dispatches a tier_promotion alert when score crosses thresholds', async () => {
+    // 4 distinct intent signals → 4 × R1@20 (intent_data + signal_type=intent)
+    // = 80 → on_fire tier. The recompute should fire a tier_promotion alert
+    // because the account's first-ever score is non-cold.
+    let accId = '';
+    for (let i = 0; i < 4; i++) {
+      const res = await postSig({
+        source: 'intent_data', account_domain: 'on-fire.com',
+        signal_type: 'intent', fact: `surge ${i}`,
+        source_url: `https://bombora.example/${i}`,
+        snippet: `surge ${i} weekly score 87`,
+        captured_at: nowIso(),
+      });
+      accId = (await res.json()).accountId;
+    }
+    const rec = await postRecompute(postRec({ accountId: accId }));
+    const body = await rec.json();
+    expect(body.tier).toBe('on_fire');
+    const tps = (body.alerts as Array<{ trigger: string }>)
+      .filter((a) => a.trigger === 'tier_promotion');
+    expect(tps).toHaveLength(1);
+  });
+
+  it('does NOT dispatch a duplicate tier_promotion on identical recompute', async () => {
+    let accId = '';
+    for (const s of ['a', 'b', 'c', 'd']) {
+      accId = (await (await postSig({
+        source: 'intent_data', account_domain: 'noop.com',
+        signal_type: 'intent', fact: `evt ${s}`,
+        source_url: `https://x.example/${s}`,
+        snippet: `${s}-snippet identifying`,
+        captured_at: nowIso(),
+      })).json()).accountId;
+    }
+    const r1 = await (await postRecompute(postRec({ accountId: accId }))).json();
+    const r2 = await (await postRecompute(postRec({ accountId: accId }))).json();
+    expect(r1.inserted).toBe(true);
+    expect(r2.inserted).toBe(false);
+
+    // r1 should have a tier_promotion alert. r2 should NOT — same scoreId,
+    // same cooldown key → dispatcher returns null. Engagement-spike per-day
+    // cooldown also prevents repeats, so r2.alerts is empty.
+    const r1tp = (r1.alerts as Array<{ trigger: string }>)
+      .filter((a) => a.trigger === 'tier_promotion');
+    const r2tp = (r2.alerts as Array<{ trigger: string }>)
+      .filter((a) => a.trigger === 'tier_promotion');
+    expect(r1tp).toHaveLength(1);
+    expect(r2tp).toHaveLength(0);
+  });
+
+  it('does NOT dispatch tier_promotion when first-ever score is cold', async () => {
+    // We want a signal that ingests cleanly through the webhook (so we
+    // can drive the full pipeline from the public boundary) but produces
+    // a SCORE of 0 (cold tier). The trick: use a trusted source whose
+    // signal_type doesn't match any scoring rule's signal_type clause.
+    // `intent_data` + signal_type `engagement` is verified-eligible but
+    // R1 only fires for signal_type `intent`. No other rule matches a
+    // bare intent_data. Result: score=0, tier=cold, score row inserted.
+    const sigRes = await postSig({
+      source: 'intent_data', account_domain: 'cold-only.example',
+      signal_type: 'engagement', fact: 'noise',
+      source_url: 'https://bombora.example/noise',
+      snippet: 'noise signal that no rule matches',
+      captured_at: nowIso(),
+    });
+    if (sigRes.status !== 200) {
+      throw new Error(`signal ingest failed: ${sigRes.status} ${JSON.stringify(await sigRes.json())}`);
+    }
+    const accId = (await sigRes.json()).accountId;
+    const recRes = await postRecompute(postRec({ accountId: accId }));
+    if (recRes.status !== 200) {
+      throw new Error(`recompute failed: ${recRes.status} ${JSON.stringify(await recRes.json())}`);
+    }
+    const r = await recRes.json();
+    expect(r.score).toBe(0);
+    expect(r.tier).toBe('cold');
+    expect(r.inserted).toBe(true);
+    // CRITICAL: first-ever cold must NOT fire tier_promotion. This is the
+    // detectTierPromotion(undefined, 'cold') → null contract from Task 2.1.
+    const tps = (r.alerts as Array<{ trigger: string }>)
+      .filter((a) => a.trigger === 'tier_promotion');
+    expect(tps).toEqual([]);
+  });
+
+  it('fires engagement_spike when ≥3 engagement signals arrive even if score fingerprint did not change', async () => {
+    // Regression guard: alert dispatch must NOT be gated by
+    // score.inserted for engagement_spike. We arrange the second
+    // recompute to have inserted=false (score did not change) and still
+    // fire the spike — proving we're not relying on score-state as the
+    // trigger.
+    //
+    // We use `source: intent_data` + `signal_type: engagement` so the
+    // signals (a) ingest cleanly through the webhook (intent_data is a
+    // webhook-eligible source, not connector-only), (b) land as
+    // `verified` (intent_data is in TRUSTED_SOURCES and we're
+    // authenticated), and (c) don't match any scoring rule (R1 needs
+    // signal_type='intent', the others need different source types).
+    // Net: score stays 0 across recomputes; signals still count toward
+    // the engagement spike (signal_type='engagement' is in
+    // ENGAGEMENT_LIKE_SIGNAL_TYPES).
+    const seed = await (await postSig({
+      source: 'intent_data', account_domain: 'engagement-spike.example',
+      contact_email: 'c0@engagement-spike.example',
+      signal_type: 'engagement', fact: 'seed signal',
+      source_url: 'https://bombora.example/event/seed',
+      snippet: 'id=seed type=email_open',
+      captured_at: nowIso(),
+    })).json();
+    const accId = seed.accountId;
+
+    // Seed recompute — first row, cold (no scoring rule matched).
+    // MUST NOT fire tier_promotion (first-ever cold). MUST NOT fire
+    // spike yet (only 1 signal in window; threshold is 3).
+    const seedRecompute = await (await postRecompute(postRec({ accountId: accId }))).json();
+    expect(seedRecompute.inserted).toBe(true);
+    expect(seedRecompute.score).toBe(0);
+    expect(seedRecompute.tier).toBe('cold');
+    expect((seedRecompute.alerts as Array<{ trigger: string }>)
+      .filter((a) => a.trigger === 'tier_promotion')).toEqual([]);
+    expect((seedRecompute.alerts as Array<{ trigger: string }>)
+      .filter((a) => a.trigger === 'engagement_spike')).toEqual([]);
+
+    // Post 2 more (totaling 3 in the 24h spike window). Each has a
+    // unique snippet/source_url so dedupe-key doesn't merge them.
+    for (const i of [1, 2]) {
+      await postSig({
+        source: 'intent_data', account_domain: 'engagement-spike.example',
+        contact_email: `c${i}@engagement-spike.example`,
+        signal_type: 'engagement', fact: `signal ${i}`,
+        source_url: `https://bombora.example/event/${i}`,
+        snippet: `id=${i} type=email_open distinct snippet`,
+        captured_at: nowIso(),
+      });
+    }
+
+    const r = await (await postRecompute(postRec({ accountId: accId }))).json();
+    expect(r.inserted).toBe(false);  // same fingerprint (no rule matched any signal)
+    expect(r.score).toBe(0);
+    const spikes = (r.alerts as Array<{ trigger: string }>)
+      .filter((a) => a.trigger === 'engagement_spike');
+    expect(spikes).toHaveLength(1);
+  });
+
+  it('serializes concurrent recomputes — same scoreId, at most one tier_promotion across responses', async () => {
+    const accId = (await (await postSig({
+      source: 'intent_data', account_domain: 'race-recompute.com',
+      signal_type: 'intent', fact: 'race',
+      source_url: 'https://x.example/race',
+      snippet: 'race-snippet-recompute',
+      captured_at: nowIso(),
+    })).json()).accountId;
+    const recompute = () => postRecompute(postRec({ accountId: accId }));
+    const [a, b, c] = await Promise.all([recompute(), recompute(), recompute()]);
+    const ja = await a.json();
+    const jb = await b.json();
+    const jc = await c.json();
+    expect(new Set([ja.scoreId, jb.scoreId, jc.scoreId]).size).toBe(1);
+    const totalTps = [ja, jb, jc]
+      .flatMap((j) => (j.alerts as Array<{ trigger: string }>) ?? [])
+      .filter((a) => a.trigger === 'tier_promotion');
+    expect(totalTps.length).toBeLessThanOrEqual(1);
+  });
+
+  it('best-effort: alert dispatch throw does NOT fail recompute (score/route still committed, alerts: [])', async () => {
+    // The user's risk #2 codified as a regression test. Mock
+    // dispatchTierPromotion to throw (e.g. simulating a SQLITE_BUSY on the
+    // reserve step). The recompute MUST still return 200 with score +
+    // routing committed; the alerts array is empty; the score row exists.
+    const accId = (await (await postSig({
+      source: 'intent_data', account_domain: 'flaky-alerts.com',
+      signal_type: 'intent', fact: 'a',
+      source_url: 'https://x.example/a',
+      snippet: 'flaky-alert-snippet',
+      captured_at: nowIso(),
+    })).json()).accountId;
+    // Add 3 more so we're definitely on_fire (would normally fire alert).
+    for (let i = 1; i < 4; i++) {
+      await postSig({
+        source: 'intent_data', account_domain: 'flaky-alerts.com',
+        signal_type: 'intent', fact: `b${i}`,
+        source_url: `https://x.example/b${i}`,
+        snippet: `flaky-alert-snippet-${i}`,
+        captured_at: nowIso(),
+      });
+    }
+    const alertsMod = await import('../../lib/alerts/dispatch');
+    vi.spyOn(alertsMod, 'dispatchTierPromotion').mockRejectedValueOnce(
+      new Error('SIMULATED dispatch failure'),
+    );
+    vi.spyOn(alertsMod, 'dispatchEngagementSpike').mockRejectedValueOnce(
+      new Error('SIMULATED dispatch failure'),
+    );
+
+    const rec = await postRecompute(postRec({ accountId: accId }));
+    expect(rec.status).toBe(200);
+    const body = await rec.json();
+    expect(body.tier).toBe('on_fire');
+    expect(body.assignmentId).toBeTruthy();
+    expect(body.alerts).toEqual([]);  // both dispatches threw → dropped
+
+    // Score row is committed regardless of alert failure.
+    const { db, schema: s } = await import('@/db');
+    const scores = db.select().from(s.leadScores).all();
+    expect(scores.some((r) => r.accountId === accId)).toBe(true);
+  });
+
+  it('response carries per-channel disposition (channel="file" when no env vars set)', async () => {
+    // Risk #6: response payload must NOT overstate alert success. With
+    // SLACK_WEBHOOK_URL unset (the default in beforeEach), the channel
+    // function falls back to file delivery and records channel='file'.
+    // The response should reflect that.
+    let accId = '';
+    for (let i = 0; i < 4; i++) {
+      accId = (await (await postSig({
+        source: 'intent_data', account_domain: 'channel-honesty.com',
+        signal_type: 'intent', fact: `s${i}`,
+        source_url: `https://x.example/${i}`,
+        snippet: `channel-honesty-snippet-${i}`,
+        captured_at: nowIso(),
+      })).json()).accountId;
+    }
+    const r = await (await postRecompute(postRec({ accountId: accId }))).json();
+    const tps = (r.alerts as Array<{ trigger: string; channelsSent: Array<{ channel: string; ok: boolean }> }>)
+      .filter((a) => a.trigger === 'tier_promotion');
+    expect(tps).toHaveLength(1);
+    expect(tps[0].channelsSent.length).toBeGreaterThan(0);
+    // No env vars set → every delivery is 'file', not 'slack'.
+    expect(tps[0].channelsSent.every((c) => c.channel === 'file')).toBe(true);
   });
 });
