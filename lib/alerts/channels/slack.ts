@@ -55,10 +55,17 @@ export async function sendSlack(
       };
     }
   }
+  // 5-second budget. Slack typically responds in <500ms; a multi-second
+  // hang here would block the recompute orchestrator's response. The
+  // dispatcher's reserve has already committed; if the send times out,
+  // the alert row sits with empty channelsSentJson and the cooldown
+  // blocks any duplicate (which is exactly the "reserved but didn't
+  // deliver" state the Task 2.1 reserve-then-send pattern designed for).
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text }),
+    signal: AbortSignal.timeout(5000),
   });
   return res.ok
     ? { channel: 'slack', ok: true, sent_at: sentAt }

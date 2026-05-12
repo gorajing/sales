@@ -237,6 +237,35 @@ describe('dispatchTierPromotion — reserve-then-send', () => {
     expect(rows[0].channelsSentJson[0].ok).toBe(false);
   });
 
+  it('a failed Slack delivery still consumes the cooldown — subsequent dispatch is a no-op', async () => {
+    // Critical contract: cooldown is "at most one SEND ATTEMPT per key,"
+    // not "at most one SUCCESSFUL send per key." If the first dispatch
+    // got Slack a 5xx (or never reached Slack via timeout), the alert
+    // row exists with channelsSentJson recording the failure and the
+    // cooldownKey is taken. A second dispatch MUST NOT retry — that
+    // would amplify load against a flapping endpoint and break the
+    // "at-most-once" contract callers depend on.
+    ENV.SLACK_WEBHOOK_URL = 'https://hooks.slack.test/flaky';
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('upstream timeout', { status: 504 }),
+    );
+    const accountId = insAccount();
+    const scoreId = insScore(accountId, 70, 'on_fire');
+    const first = await dispatchTierPromotion(accountId, 'warm', 'on_fire', scoreId);
+    expect(first!.channelsSent[0].ok).toBe(false);
+    expect(first!.channelsSent[0].detail).toMatch(/504/);
+    // Now retry with the SAME (account, prior, current, scoreId). Must
+    // return null (cooldown holds) and must NOT call fetch a second
+    // time — the dispatcher's reserve catches SQLITE_CONSTRAINT_UNIQUE
+    // BEFORE attempting any send.
+    vi.mocked(globalThis.fetch).mockClear();
+    const second = await dispatchTierPromotion(accountId, 'warm', 'on_fire', scoreId);
+    expect(second).toBeNull();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+    // Still exactly one alert row.
+    expect(db.select().from(schemaMod.alerts).all()).toHaveLength(1);
+  });
+
   it('records channel="slack" + ok=false when fetch() rejects (network/DNS error)', async () => {
     // Network-layer failure — fetch throws instead of resolving with a
     // non-2xx response. The dispatcher's per-channel try/catch must

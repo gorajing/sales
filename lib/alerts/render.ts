@@ -47,11 +47,16 @@ Include the trigger reason and a clear next step.`;
 export async function renderAlertText(ctx: AlertContext): Promise<string> {
   const prompt = `${SYSTEM}\n\nContext: ${JSON.stringify(ctx)}`;
   try {
+    // 5-second budget. Alerts are best-effort and have a deterministic
+    // fallback, so spending up to 30s waiting for Claude (and thus
+    // blocking the recompute response) is the wrong trade-off. A
+    // 5-second cap is comfortable for Haiku's typical latency
+    // (<1s) and falls back loudly if anything is genuinely slow.
     const out = await spawnClaude({
       prompt,
       schema: Out,
       model: 'haiku',
-      timeoutMs: 30_000,
+      timeoutMs: 5_000,
     });
     return out.text;
   } catch {

@@ -44,10 +44,17 @@ beforeEach(async () => {
   SAVED_ENV.DEFAULT_OWNER_EMAIL = ENV.DEFAULT_OWNER_EMAIL;
   SAVED_ENV.INTERNAL_API_SECRET = ENV.INTERNAL_API_SECRET;
   SAVED_ENV.NODE_ENV = ENV.NODE_ENV;
+  SAVED_ENV.SLACK_WEBHOOK_URL = ENV.SLACK_WEBHOOK_URL;
+  SAVED_ENV.GENERIC_WEBHOOK_URL = ENV.GENERIC_WEBHOOK_URL;
   ENV.SIGNAL_WEBHOOK_SECRET = SIGNAL_SECRET;
   ENV.DEFAULT_OWNER_EMAIL = 'fallback@example.com';
   delete ENV.INTERNAL_API_SECRET;
   delete ENV.NODE_ENV;
+  // CRITICAL: clear channel URLs so tests never call a real Slack /
+  // generic webhook even if the developer has them set locally. The
+  // channel-honesty assertions assume file fallback; this guarantees it.
+  delete ENV.SLACK_WEBHOOK_URL;
+  delete ENV.GENERIC_WEBHOOK_URL;
 
   // Delete in FK-dependency order: alerts → routing_assignments →
   // lead_scores → evidence → contacts → accounts. With alerts now

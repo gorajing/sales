@@ -57,10 +57,13 @@ import type { ChannelDelivery } from '@/lib/alerts/types';
  *          the operator immediately knows "fix env / files," not
  *          "investigate code."
  *
- * Alert dispatch is intentionally NOT wired here. The dispatcher comes
- * online in Task 2.1 and the wiring lands in Task 2.2 by editing this
- * file. Phase 1 verifies score+route compute correctly; alerts are
- * Phase 2.
+After score and routing commit, this route invokes the alert dispatchers
+ * (`dispatchTierPromotion`, `dispatchEngagementSpike` from
+ * `lib/alerts/dispatch.ts`) as a best-effort side effect. Dispatch
+ * failures are caught + logged and never affect the response status —
+ * alerts are a side effect, not the work. Each dispatched alert's
+ * per-channel disposition is surfaced in the response body so callers
+ * can distinguish "alert reserved" from "alert reserved AND delivered."
  */
 
 /** Body size cap. The body is `{accountId: string}` — even a long

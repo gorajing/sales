@@ -38,10 +38,13 @@ export async function sendWebhook(
       };
     }
   }
+  // 5-second budget — same rationale as sendSlack: cap the worst case
+  // so a hung partner endpoint can't block the recompute response.
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(5000),
   });
   return res.ok
     ? { channel: 'webhook', ok: true, sent_at: sentAt }
