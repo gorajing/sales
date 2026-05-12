@@ -276,15 +276,16 @@ export async function dispatchEngagementSpike(
 ): Promise<DispatchResult | null> {
   // Bound the recent-evidence query to the rolling window.
   //
-  // capturedAt is a raw TEXT column; ingest stores whatever ISO string
-  // the producer sent (Z or ±HH:MM). A naive lexicographic compare
-  // against a UTC `since` cutoff would WRONGLY exclude rows whose
-  // local-offset prefix sorts before the cutoff but whose UTC instant is
-  // recent — e.g. `2026-05-09T01:00:00.000-12:00` (UTC = May 9 13:00Z)
-  // sorts lexically before `2026-05-09T12:00:00.000Z` but is the same
-  // UTC moment. We normalize both sides to UTC via SQLite's strftime,
-  // matching the pattern already established in lib/inbound/queries.ts.
-  // Same root cause as the recentSignalEvidence sort fix.
+  // As of the round-2 fix in lib/signals/ingest.ts, ingest normalizes
+  // captured_at to UTC-Z form before persisting, so for rows written
+  // through the webhook a lex compare against `since` would already be
+  // chronological. The `strftime('%Y-%m-%dT%H:%M:%fZ', ...)` normalization
+  // is kept here as defense-in-depth against legacy rows or any future
+  // code path that bypasses ingestSignal and writes a raw offset string.
+  // strftime returns the row's captured_at re-rendered as UTC-Z, so the
+  // compare against the UTC `since` cutoff is always chronological
+  // regardless of stored form. Matches the same pattern in
+  // lib/inbound/queries.ts.
   const since = new Date(now.getTime() - windowHours * 3600 * 1000).toISOString();
   const recent = db.select().from(schema.evidence)
     .where(and(
