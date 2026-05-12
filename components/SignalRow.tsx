@@ -19,7 +19,11 @@ export function SignalRow({
 }: {
   capturedAt: string;
   sourceType: string;
-  signalType: string | null;
+  /** schema.evidence.signalType is NOT NULL DEFAULT 'none'; the column
+   *  never carries null, so the prop type stays string. The Recent-signals
+   *  query in lib/inbound/queries.ts already filters `!= 'none'`, so this
+   *  value will be one of the non-'none' enum members at render time. */
+  signalType: string;
   snippet: string;
   accountId: string;
   /** Display label for the account (domain or name). Null if unknown. */
@@ -30,7 +34,7 @@ export function SignalRow({
     <tr className="border-b">
       <td className="py-1 px-2 text-xs text-slate-500 whitespace-nowrap">{ts}</td>
       <td className="py-1 px-2 font-mono text-xs">{sourceType}</td>
-      <td className="py-1 px-2 font-mono text-xs text-slate-500">{signalType ?? '—'}</td>
+      <td className="py-1 px-2 font-mono text-xs text-slate-500">{signalType}</td>
       <td className="py-1 px-2 text-xs">
         {accountLabel ? (
           <Link href={`/accounts/${accountId}`} className="text-blue-700 hover:underline">

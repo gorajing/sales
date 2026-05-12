@@ -42,7 +42,11 @@ export default async function EvidencePage({ params }: { params: Promise<{ id: s
             e.extractionStatus === 'disputed' ? 'bg-amber-100 text-amber-800' :
             'bg-neutral-100 text-neutral-700';
           return (
-            <li key={e.id} className="rounded border border-neutral-200 bg-white p-3">
+            // `id={e.id}` is the anchor target for deep-links from
+            // ScoreRationale on /accounts/[id] (rationale rows link
+            // `…/evidence#ev_…`). React `key` is virtual-DOM only;
+            // the HTML `id` is what the browser scrolls to.
+            <li key={e.id} id={e.id} className="rounded border border-neutral-200 bg-white p-3 scroll-mt-20 target:ring-2 target:ring-blue-400">
               <div className="flex items-center justify-between">
                 <span className={`rounded px-2 py-0.5 text-xs ${statusColor}`}>
                   {e.extractionStatus}

@@ -13,32 +13,44 @@ export default async function AccountPage({ params }: { params: Promise<{ id: st
   if (!account) notFound();
 
   // Latest scoring for this account, if any. Returns undefined when no
-  // recompute has run yet — we render the Score section only when we
-  // have something to show, so first-time accounts don't display an
-  // empty rationale panel.
+  // recompute has run yet — the Score section renders conditionally so
+  // first-time accounts don't show an empty rationale panel.
   const latestScore = latestScoreForAccount(id);
+
+  // When the account was auto-created from a signal, ingest sets
+  // `name = domain` as a placeholder until the operator renames it
+  // (lib/signals/ingest.ts). Suppressing the duplicate subtitle keeps the
+  // header from showing "acme.com" twice — once as the title and once as
+  // the subtitle.
+  const showDomainSubtitle = account.domain && account.domain !== account.name;
 
   return (
     <main>
       <Link href="/" className="text-sm text-neutral-500">← Accounts</Link>
       <h1 className="mt-2 text-2xl font-semibold">{account.name}</h1>
-      {account.domain && <p className="text-sm text-neutral-500">{account.domain}</p>}
-      <nav className="mt-4 flex gap-3 text-sm">
-        <Link href={`/accounts/${id}/evidence`} className="underline">Evidence</Link>
-        <Link href={`/accounts/${id}/contacts`} className="underline">Contacts</Link>
-        <Link href={`/accounts/${id}/sequences`} className="underline">Sequences</Link>
-      </nav>
+      {showDomainSubtitle && (
+        <p className="text-sm text-neutral-500">{account.domain}</p>
+      )}
 
+      {/* Score panel ABOVE the sub-nav. Operators arriving from /inbound
+          clicked the account because of the score — show them why first,
+          before the deeper Evidence/Contacts/Sequences tabs. */}
       {latestScore && (
-        <section className="mt-6 max-w-2xl">
-          <h2 className="text-lg font-medium mb-2">Score</h2>
+        <section className="mt-4 max-w-2xl">
           <ScoreRationale
             items={latestScore.rationaleJson}
             score={latestScore.score}
             tier={latestScore.tier}
+            accountId={id}
           />
         </section>
       )}
+
+      <nav className="mt-6 flex gap-3 text-sm">
+        <Link href={`/accounts/${id}/evidence`} className="underline">Evidence</Link>
+        <Link href={`/accounts/${id}/contacts`} className="underline">Contacts</Link>
+        <Link href={`/accounts/${id}/sequences`} className="underline">Sequences</Link>
+      </nav>
     </main>
   );
 }
