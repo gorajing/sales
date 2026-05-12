@@ -164,6 +164,24 @@ describe('POST /api/alerts/:id/ack — error responses', () => {
     const res = await ackPost(req, { params: Promise.resolve({ id: alertId }) });
     expect(res.status).toBe(415);
   });
+
+  it('returns 413 when body exceeds MAX_BODY_BYTES even without Content-Length', async () => {
+    // Regression guard for the round-1 BLOCKER: the original ack route
+    // used `req.text()` + UTF-16 length check, which would buffer the
+    // entire payload before noticing the cap. The fix swapped to the
+    // streaming `readBoundedBody` helper that bails on the first chunk
+    // that crosses the byte cap. Verify by sending a 64KB body with
+    // Content-Length omitted (the cap should still fire).
+    const { alertId } = await seed();
+    const huge = 'x'.repeat(64 * 1024);
+    const req = new Request(`http://x/api/alerts/${alertId}/ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },  // no Content-Length
+      body: JSON.stringify({ by: 'jin@example.com', noise: huge }),
+    });
+    const res = await ackPost(req, { params: Promise.resolve({ id: alertId }) });
+    expect(res.status).toBe(413);
+  });
 });
 
 describe('POST /api/alerts/:id/ack — auth + production guard', () => {

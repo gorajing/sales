@@ -2,10 +2,16 @@ import { NextResponse } from 'next/server';
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 /**
- * Small HTTP helpers shared by the alerts endpoints. Same pattern as
- * /api/signals and /api/scoring/recompute — duplicated rather than
- * abstracted into a single shared module until the THIRD endpoint
- * needs them (then it's worth extracting to `lib/http/`).
+ * HTTP helpers shared by the alerts endpoints. The pattern mirrors
+ * /api/signals and /api/scoring/recompute, which each carry their own
+ * local copies of timingSafeStringEqual / parseMediaType / readBoundedBody.
+ * `readBoundedBody` is the third user of the streaming byte-cap pattern,
+ * so it lives here as the shared definition; signals and recompute can
+ * migrate to use it in a follow-up cleanup.
+ *
+ * `requireInternalSecret` is alerts-specific in shape (env var + header
+ * name are parameters), but the underlying production-guard + auth
+ * pattern matches the other endpoints exactly.
  */
 
 /** Equal-length precondition for timingSafeEqual is met via SHA-256
