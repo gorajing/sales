@@ -11,3 +11,9 @@ dist/
 build/
 *.log
 tsconfig.tsbuildinfo
+
+# Alert dispatcher's file-fallback drop zone (lib/alerts/channels/*).
+# Populated whenever SLACK_WEBHOOK_URL / GENERIC_WEBHOOK_URL are unset, or
+# when v1 email writes its .eml stub. Test runs accumulate files here;
+# never check in.
+outbox/
