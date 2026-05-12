@@ -1,5 +1,5 @@
 import { db, schema } from '@/db';
-import { eq, and, gte } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import { newId } from '../id';
 import type { Tier } from '../scoring/rules';
 import type { SignalType } from '@/db/schema';
@@ -70,17 +70,20 @@ export type { AlertChannel, ChannelDelivery, DispatchResult } from './types';
 const TIER_RANK: Record<Tier, number> = { cold: 0, warm: 1, hot: 2, on_fire: 3 };
 
 /** Engagement-like signal types — signal_type values that count toward
- *  the engagement-spike threshold. Source-of-truth-checked against
- *  the SignalType union so a future enum change can't silently miss a
- *  category here. */
+ *  the engagement-spike threshold. Adding a value to SignalType does
+ *  NOT automatically make it engagement-like (categorization is a
+ *  product decision); this list is the explicit allow-list. */
 const ENGAGEMENT_LIKE_SIGNAL_TYPES = ['intent', 'engagement', 'trigger_event'] as const;
-type EngagementLikeSignalType = (typeof ENGAGEMENT_LIKE_SIGNAL_TYPES)[number];
 
-// Compile-time check: every member of ENGAGEMENT_LIKE_SIGNAL_TYPES must
-// also be a member of SignalType. If signal_type's enum is reduced and
-// loses 'intent' / 'engagement' / 'trigger_event', this assignment
-// fails to typecheck — the engagement-spike rule is forced to update
-// in the same change.
+// Compile-time **subset** check (catches REMOVALS only):
+// every member of ENGAGEMENT_LIKE_SIGNAL_TYPES must also be a member of
+// SignalType. If signal_type's enum is reduced and loses 'intent',
+// 'engagement', or 'trigger_event', this assignment fails to typecheck
+// and forces an explicit update of this list in the same change.
+//
+// This check does NOT detect ADDITIONS to SignalType — that's by design.
+// A new signal_type ('demo_attended', say) is not engagement-like by
+// default; a human has to decide whether to include it in this list.
 const _ENGAGEMENT_TYPES_ARE_SIGNAL_TYPES: readonly SignalType[] = ENGAGEMENT_LIKE_SIGNAL_TYPES;
 void _ENGAGEMENT_TYPES_ARE_SIGNAL_TYPES;
 
@@ -204,11 +207,35 @@ export async function dispatchTierPromotion(
   // -----------------------------------------------------------------
   // (3) UPDATE — record what actually shipped and persist the
   //     rendered text so /alerts can display it.
+  //
+  // If this UPDATE throws after the external sends succeeded, the row
+  // is stuck in its reserved state (empty channelsSentJson) and the
+  // cooldown slot is taken forever. We catch + log loudly rather than
+  // propagating, because:
+  //   - We've already done external side effects (Slack got the
+  //     message); throwing here doesn't undo them.
+  //   - The cooldown slot is already blocking duplicate sends, so we
+  //     have at-most-once at the user-visible layer.
+  //   - The orchestrator (recompute) shouldn't fail just because the
+  //     audit-update step couldn't write.
+  // The console.error gives operators a recovery handle: delete the
+  // empty alert row by id to release the cooldown if they need to
+  // re-fire. In practice better-sqlite3 .update() by id only throws
+  // on a corrupted DB, in which case bigger problems are at play.
   // -----------------------------------------------------------------
-  db.update(schema.alerts).set({
-    payloadJson: { fromTier: fromTier ?? null, toTier: promoted, scoreId, text },
-    channelsSentJson: sent,
-  }).where(eq(schema.alerts.id, alertId)).run();
+  try {
+    db.update(schema.alerts).set({
+      payloadJson: { fromTier: fromTier ?? null, toTier: promoted, scoreId, text },
+      channelsSentJson: sent,
+    }).where(eq(schema.alerts.id, alertId)).run();
+  } catch (err) {
+    console.error(
+      `[alerts] dispatchTierPromotion: post-send UPDATE failed for alertId=${alertId}; ` +
+      `delivery already attempted (channels=${JSON.stringify(sent)}); ` +
+      `cooldown is now stuck. Manual recovery: DELETE FROM alerts WHERE id='${alertId}'.`,
+      err,
+    );
+  }
 
   return { alertId, channelsSent: sent };
 }
@@ -219,19 +246,23 @@ export async function dispatchEngagementSpike(
   windowHours = 24,
   thresholdCount = 3,
 ): Promise<DispatchResult | null> {
-  // Bound the recent-evidence query to the rolling window. SQLite TEXT
-  // ISO comparison works for chronological order only when timestamps
-  // share the same offset format; ingest stores whatever the producer
-  // sent. The since-cutoff is precise UTC; values stored as `+HH:MM`
-  // might pass a precise-UTC filter despite lexicographic surprises in
-  // ORDER BY. The post-filter on signalType keeps this on the bounded
-  // window's small result set.
+  // Bound the recent-evidence query to the rolling window.
+  //
+  // capturedAt is a raw TEXT column; ingest stores whatever ISO string
+  // the producer sent (Z or ±HH:MM). A naive lexicographic compare
+  // against a UTC `since` cutoff would WRONGLY exclude rows whose
+  // local-offset prefix sorts before the cutoff but whose UTC instant is
+  // recent — e.g. `2026-05-09T01:00:00.000-12:00` (UTC = May 9 13:00Z)
+  // sorts lexically before `2026-05-09T12:00:00.000Z` but is the same
+  // UTC moment. We normalize both sides to UTC via SQLite's strftime,
+  // matching the pattern already established in lib/inbound/queries.ts.
+  // Same root cause as the recentSignalEvidence sort fix.
   const since = new Date(now.getTime() - windowHours * 3600 * 1000).toISOString();
   const recent = db.select().from(schema.evidence)
     .where(and(
       eq(schema.evidence.accountId, accountId),
       eq(schema.evidence.extractionStatus, 'verified'),
-      gte(schema.evidence.capturedAt, since),
+      sql`strftime('%Y-%m-%dT%H:%M:%fZ', ${schema.evidence.capturedAt}) >= ${since}`,
     )).all()
     .filter((e) => (ENGAGEMENT_LIKE_SIGNAL_TYPES as readonly string[]).includes(e.signalType));
   if (recent.length < thresholdCount) return null;
@@ -282,11 +313,21 @@ export async function dispatchEngagementSpike(
     };
   }
 
-  // (3) UPDATE.
-  db.update(schema.alerts).set({
-    payloadJson: { countInWindow: recent.length, windowHours, text },
-    channelsSentJson: [delivery],
-  }).where(eq(schema.alerts.id, alertId)).run();
+  // (3) UPDATE. Same swallow-and-log as dispatchTierPromotion (see
+  // that function for the rationale).
+  try {
+    db.update(schema.alerts).set({
+      payloadJson: { countInWindow: recent.length, windowHours, text },
+      channelsSentJson: [delivery],
+    }).where(eq(schema.alerts.id, alertId)).run();
+  } catch (err) {
+    console.error(
+      `[alerts] dispatchEngagementSpike: post-send UPDATE failed for alertId=${alertId}; ` +
+      `delivery already attempted (channel=${delivery.channel}, ok=${delivery.ok}); ` +
+      `cooldown is now stuck. Manual recovery: DELETE FROM alerts WHERE id='${alertId}'.`,
+      err,
+    );
+  }
 
   return { alertId, channelsSent: [delivery] };
 }

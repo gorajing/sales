@@ -11,6 +11,20 @@ vi.mock('../../lib/claude/run', () => ({
   ClaudeError: class extends Error {},
 }));
 
+// node:fs is mocked with importActual so the channel modules' file fallback
+// uses the real fs by default, but specific tests can override
+// writeFileSync (or mkdirSync) per-test via vi.mocked(...).mockImplementationOnce
+// to simulate disk-failure paths. ESM module namespaces aren't directly
+// spyable; vi.mock is the only reliable approach.
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+    mkdirSync: vi.fn(actual.mkdirSync),
+  };
+});
+
 vi.mock('@/db', async () => {
   const { default: Database } = await import('better-sqlite3');
   const { drizzle } = await import('drizzle-orm/better-sqlite3');
@@ -223,6 +237,53 @@ describe('dispatchTierPromotion — reserve-then-send', () => {
     expect(rows[0].channelsSentJson[0].ok).toBe(false);
   });
 
+  it('records channel="slack" + ok=false when fetch() rejects (network/DNS error)', async () => {
+    // Network-layer failure — fetch throws instead of resolving with a
+    // non-2xx response. The dispatcher's per-channel try/catch must
+    // capture this as { channel: 'slack', ok: false } so the audit row
+    // shows where the failure actually happened. NOT 'file' — we never
+    // tried the file path; the URL was set.
+    ENV.SLACK_WEBHOOK_URL = 'https://hooks.slack.test/dead';
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(
+      new Error('connect ETIMEDOUT 127.0.0.1:443'),
+    );
+
+    const accountId = insAccount();
+    const scoreId = insScore(accountId, 50, 'hot');
+    const r = await dispatchTierPromotion(accountId, 'warm', 'hot', scoreId);
+
+    expect(r!.channelsSent[0].channel).toBe('slack');
+    expect(r!.channelsSent[0].ok).toBe(false);
+    expect(r!.channelsSent[0].detail).toMatch(/ETIMEDOUT/);
+    // Row persisted with the honest failure.
+    const rows = db.select().from(schemaMod.alerts).all();
+    expect(rows[0].channelsSentJson[0]).toMatchObject({ channel: 'slack', ok: false });
+  });
+
+  it('records channel="file" + ok=false when the file fallback write throws (NOT "slack")', async () => {
+    // SLACK_WEBHOOK_URL is unset → channel function tries file
+    // fallback. If writeFileSync throws (disk full, perms), the
+    // disposition MUST be channel: 'file' + ok: false — not
+    // channel: 'slack', which would lie about a network call that
+    // was never even attempted. The fix lives inside each channel
+    // function so the dispatcher's catch can never misattribute.
+    const fs = await import('node:fs');
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+
+    const accountId = insAccount();
+    const scoreId = insScore(accountId, 50, 'hot');
+    const r = await dispatchTierPromotion(accountId, 'warm', 'hot', scoreId);
+
+    expect(r!.channelsSent[0].channel).toBe('file');
+    expect(r!.channelsSent[0].ok).toBe(false);
+    expect(r!.channelsSent[0].detail).toMatch(/ENOSPC/);
+    // Honest delivery state survives to the DB.
+    const rows = db.select().from(schemaMod.alerts).all();
+    expect(rows[0].channelsSentJson[0]).toMatchObject({ channel: 'file', ok: false });
+  });
+
   it('on_fire fires BOTH slack and email channels (severity=urgent escalation)', async () => {
     const accountId = insAccount();
     const scoreId = insScore(accountId, 90, 'on_fire');
@@ -383,5 +444,21 @@ describe('dispatchEngagementSpike', () => {
     insSignal(accountId, '2026-05-10T09:00:00.000Z');
     const r = await dispatchEngagementSpike(accountId, now);
     expect(r!.channelsSent[0].channel).toBe('file');
+  });
+
+  it('correctly windows mixed-offset captured_at timestamps (UTC normalization)', async () => {
+    // Regression guard against the BLOCKER 1 fix. A signal at
+    // 2026-05-09T01:00:00-12:00 is UTC = 2026-05-09T13:00:00.000Z —
+    // within a 24h window ending at 2026-05-10T12:00:00.000Z. A naive
+    // lex compare against the UTC since-cutoff (2026-05-09T12:00:00Z)
+    // would WRONGLY exclude it because '2026-05-09T01:...' < the
+    // cutoff string. The fix normalizes via strftime() before compare.
+    const accountId = insAccount();
+    const now = new Date('2026-05-10T12:00:00.000Z');
+    insSignal(accountId, '2026-05-09T01:00:00.000-12:00');  // UTC = 13:00Z, in window
+    insSignal(accountId, '2026-05-10T11:00:00.000Z');
+    insSignal(accountId, '2026-05-10T10:00:00.000Z');
+    const r = await dispatchEngagementSpike(accountId, now);
+    expect(r).not.toBeNull();  // 3 signals in window if normalization is correct
   });
 });

@@ -8,7 +8,9 @@ import type { ChannelDelivery } from '../types';
  * `{text}` Slack shape.
  *
  * Returned `channel` is `'file'` when GENERIC_WEBHOOK_URL is unset
- * (honest fallback), `'webhook'` otherwise.
+ * (honest fallback) regardless of whether the file write succeeded.
+ * Returned `channel` is `'webhook'` when the URL was set, regardless of
+ * HTTP status. Network errors are re-thrown to the dispatcher.
  */
 export async function sendWebhook(
   payload: unknown,
@@ -17,15 +19,24 @@ export async function sendWebhook(
 ): Promise<ChannelDelivery> {
   const url = process.env.GENERIC_WEBHOOK_URL;
   if (!url) {
-    const dir = resolve(process.cwd(), 'outbox');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(resolve(dir, `webhook-${alertId}.json`), JSON.stringify(payload, null, 2));
-    return {
-      channel: 'file',
-      ok: true,
-      sent_at: sentAt,
-      detail: 'GENERIC_WEBHOOK_URL unset; wrote payload to outbox/',
-    };
+    try {
+      const dir = resolve(process.cwd(), 'outbox');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, `webhook-${alertId}.json`), JSON.stringify(payload, null, 2));
+      return {
+        channel: 'file',
+        ok: true,
+        sent_at: sentAt,
+        detail: 'GENERIC_WEBHOOK_URL unset; wrote payload to outbox/',
+      };
+    } catch (err) {
+      return {
+        channel: 'file',
+        ok: false,
+        sent_at: sentAt,
+        detail: `file fallback failed: ${(err as Error).message}`,
+      };
+    }
   }
   const res = await fetch(url, {
     method: 'POST',

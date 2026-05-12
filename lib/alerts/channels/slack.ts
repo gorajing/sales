@@ -5,15 +5,21 @@ import type { ChannelDelivery } from '../types';
 /**
  * Slack-webhook delivery with file fallback.
  *
- * Returns a `ChannelDelivery` describing what ACTUALLY happened:
- *   - SLACK_WEBHOOK_URL unset → writes the rendered text to
- *     `outbox/slack-<alertId>.json`, returns `{ channel: 'file', ok: true }`.
- *     Never returns `channel: 'slack'` for the disk path — that would lie
- *     to the operator about delivery.
+ * Returns a `ChannelDelivery` describing what ACTUALLY happened. The
+ * `channel` field is the honest disposition of the delivery attempt:
+ *
  *   - URL set + HTTP 2xx → `{ channel: 'slack', ok: true }`.
  *   - URL set + HTTP non-2xx → `{ channel: 'slack', ok: false, detail: 'HTTP <code>' }`.
- *   - URL set + fetch throws → propagated to the caller; dispatcher catches
- *     and records `ok: false`.
+ *   - URL unset + file write OK → `{ channel: 'file', ok: true }`.
+ *   - URL unset + file write THROWS → `{ channel: 'file', ok: false, detail }`.
+ *     (Critically NOT `channel: 'slack'` — the slack network call never
+ *     happened. The disposition reflects the attempt that was actually
+ *     made, which was the file path.)
+ *
+ * Network errors from the URL-set path (DNS failure, timeout, fetch throw)
+ * are re-thrown to the caller; the dispatcher's `try/catch` records them
+ * as `{ channel: 'slack', ok: false }` since 'slack' WAS the attempted
+ * channel.
  *
  * No retries. A retry loop here would amplify rate-limit churn and
  * complicate the reserve-then-send contract. v1.5 may add a queue.
@@ -25,15 +31,29 @@ export async function sendSlack(
 ): Promise<ChannelDelivery> {
   const url = process.env.SLACK_WEBHOOK_URL;
   if (!url) {
-    const dir = resolve(process.cwd(), 'outbox');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(resolve(dir, `slack-${alertId}.json`), JSON.stringify({ text }, null, 2));
-    return {
-      channel: 'file',
-      ok: true,
-      sent_at: sentAt,
-      detail: 'SLACK_WEBHOOK_URL unset; wrote payload to outbox/',
-    };
+    try {
+      const dir = resolve(process.cwd(), 'outbox');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, `slack-${alertId}.json`), JSON.stringify({ text }, null, 2));
+      return {
+        channel: 'file',
+        ok: true,
+        sent_at: sentAt,
+        detail: 'SLACK_WEBHOOK_URL unset; wrote payload to outbox/',
+      };
+    } catch (err) {
+      // File-fallback failed (disk full, perms, etc.). The disposition
+      // is 'file' — that's the channel we attempted — and ok=false so
+      // operators see "fallback was attempted and broke" rather than
+      // "slack failed" (which would lie about a network call we never
+      // even tried).
+      return {
+        channel: 'file',
+        ok: false,
+        sent_at: sentAt,
+        detail: `file fallback failed: ${(err as Error).message}`,
+      };
+    }
   }
   const res = await fetch(url, {
     method: 'POST',
