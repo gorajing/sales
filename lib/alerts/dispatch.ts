@@ -97,6 +97,33 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /**
+ * Single retry with 50ms backoff for transient SQLite errors on the
+ * step-3 update path. Tries once; on failure, waits 50ms and tries
+ * again; on second failure, returns the caught error to the caller for
+ * swallow-and-log. Why retry at all: SQLITE_BUSY (file lock from a
+ * checkpoint, WAL writer, or in-flight transaction in the same
+ * process) is the most common synchronous-better-sqlite3 failure mode
+ * and usually clears within a tick. Why bounded: an infinite loop
+ * could mask a genuine programming bug (constraint violation, missing
+ * row) — one retry is enough to cover transient busy without hiding
+ * deterministic failures.
+ */
+async function withSingleRetry<T>(fn: () => T): Promise<T | { error: unknown }> {
+  try {
+    return fn();
+  } catch (first) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    try {
+      return fn();
+    } catch {
+      // Return the FIRST error — that's the original symptom. The
+      // second is typically just "still busy" and less informative.
+      return { error: first };
+    }
+  }
+}
+
+/**
  * Pure tier-transition classifier.
  *
  * Returns the new tier when there's a strictly-upward transition, null
@@ -210,30 +237,31 @@ export async function dispatchTierPromotion(
   //
   // If this UPDATE throws after the external sends succeeded, the row
   // is stuck in its reserved state (empty channelsSentJson) and the
-  // cooldown slot is taken forever. We catch + log loudly rather than
-  // propagating, because:
-  //   - We've already done external side effects (Slack got the
-  //     message); throwing here doesn't undo them.
+  // cooldown slot is taken forever. We try once, retry once after a
+  // 50ms backoff for transient SQLITE_BUSY, then swallow-and-log:
+  //   - External side effects already happened; throwing here doesn't
+  //     undo them.
   //   - The cooldown slot is already blocking duplicate sends, so we
   //     have at-most-once at the user-visible layer.
   //   - The orchestrator (recompute) shouldn't fail just because the
   //     audit-update step couldn't write.
   // The console.error gives operators a recovery handle: delete the
   // empty alert row by id to release the cooldown if they need to
-  // re-fire. In practice better-sqlite3 .update() by id only throws
-  // on a corrupted DB, in which case bigger problems are at play.
+  // re-fire.
   // -----------------------------------------------------------------
-  try {
+  const updateResult = await withSingleRetry(() =>
     db.update(schema.alerts).set({
       payloadJson: { fromTier: fromTier ?? null, toTier: promoted, scoreId, text },
       channelsSentJson: sent,
-    }).where(eq(schema.alerts.id, alertId)).run();
-  } catch (err) {
+    }).where(eq(schema.alerts.id, alertId)).run(),
+  );
+  if (updateResult && typeof updateResult === 'object' && 'error' in updateResult) {
     console.error(
-      `[alerts] dispatchTierPromotion: post-send UPDATE failed for alertId=${alertId}; ` +
-      `delivery already attempted (channels=${JSON.stringify(sent)}); ` +
-      `cooldown is now stuck. Manual recovery: DELETE FROM alerts WHERE id='${alertId}'.`,
-      err,
+      `[alerts] dispatchTierPromotion: post-send UPDATE failed (after retry) ` +
+      `for alertId=${alertId}; delivery already attempted ` +
+      `(channels=${JSON.stringify(sent)}); cooldown is now stuck. ` +
+      `Manual recovery: DELETE FROM alerts WHERE id='${alertId}'.`,
+      updateResult.error,
     );
   }
 
@@ -313,19 +341,21 @@ export async function dispatchEngagementSpike(
     };
   }
 
-  // (3) UPDATE. Same swallow-and-log as dispatchTierPromotion (see
-  // that function for the rationale).
-  try {
+  // (3) UPDATE. Same retry-once-then-swallow-and-log as
+  // dispatchTierPromotion (see that function for the rationale).
+  const updateResult = await withSingleRetry(() =>
     db.update(schema.alerts).set({
       payloadJson: { countInWindow: recent.length, windowHours, text },
       channelsSentJson: [delivery],
-    }).where(eq(schema.alerts.id, alertId)).run();
-  } catch (err) {
+    }).where(eq(schema.alerts.id, alertId)).run(),
+  );
+  if (updateResult && typeof updateResult === 'object' && 'error' in updateResult) {
     console.error(
-      `[alerts] dispatchEngagementSpike: post-send UPDATE failed for alertId=${alertId}; ` +
-      `delivery already attempted (channel=${delivery.channel}, ok=${delivery.ok}); ` +
-      `cooldown is now stuck. Manual recovery: DELETE FROM alerts WHERE id='${alertId}'.`,
-      err,
+      `[alerts] dispatchEngagementSpike: post-send UPDATE failed (after retry) ` +
+      `for alertId=${alertId}; delivery already attempted ` +
+      `(channel=${delivery.channel}, ok=${delivery.ok}); cooldown is now stuck. ` +
+      `Manual recovery: DELETE FROM alerts WHERE id='${alertId}'.`,
+      updateResult.error,
     );
   }
 

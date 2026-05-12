@@ -109,6 +109,19 @@ export async function ingestSignal(
   const email = payload.contact_email?.toLowerCase().trim() || null;
   const dedupeKey = buildDedupeKey(payload, capturedBy, domain);
 
+  // Normalize captured_at to UTC-Z at the boundary. SignalPayload's
+  // `z.string().datetime({ offset: true })` accepts the full RFC 3339
+  // offset range (±23:59), but SQLite's `strftime('%Y-%m-%dT%H:%M:%fZ',
+  // ...)` only handles realistic timezone offsets (±14:00) and returns
+  // NULL for extremes — silently dropping rows from downstream
+  // `strftime`-based WHERE/ORDER BY queries (engagement_spike, recent
+  // signals, etc.). Storing in canonical UTC-Z form makes lexicographic
+  // compare equivalent to chronological compare and eliminates the
+  // value-range mismatch between Zod and SQLite. The Zod schema already
+  // rejected malformed inputs; this only changes the FORM of valid
+  // inputs.
+  const capturedAtIso = new Date(payload.captured_at).toISOString();
+
   // Trust requires BOTH a trusted source label AND an authenticated sender.
   const status: 'verified' | 'pending_audit' =
     opts.trustedSender === true && TRUSTED_SOURCES.has(payload.source)
@@ -235,7 +248,7 @@ export async function ingestSignal(
         extractedFact: payload.fact,
         extractionStatus: status,
         confidence: 'high',
-        capturedAt: payload.captured_at,
+        capturedAt: capturedAtIso,
         capturedBy,
         dedupeKey,
       }).run();

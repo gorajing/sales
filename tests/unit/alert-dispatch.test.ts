@@ -293,6 +293,25 @@ describe('dispatchTierPromotion — reserve-then-send', () => {
     expect(r!.channelsSent.every((c) => c.channel === 'file')).toBe(true);
   });
 
+  it('on_fire email file-write failure is honestly recorded (channel="file" + ok=false)', async () => {
+    // Email has no v1 SMTP; the file fallback is the only path. If
+    // writeFileSync fails (perms, disk), the email channel function
+    // owns the catch and returns channel='file', ok=false — same
+    // honesty contract as the slack file-fallback path. Mock the second
+    // writeFileSync call (slack succeeds, email fails).
+    const fs = await import('node:fs');
+    vi.mocked(fs.writeFileSync)
+      .mockImplementationOnce(() => undefined)  // slack OK
+      .mockImplementationOnce(() => { throw new Error('EROFS: read-only file system'); });
+    const accountId = insAccount();
+    const scoreId = insScore(accountId, 95, 'on_fire');
+    const r = await dispatchTierPromotion(accountId, 'hot', 'on_fire', scoreId);
+    expect(r!.channelsSent).toHaveLength(2);
+    expect(r!.channelsSent[0]).toMatchObject({ channel: 'file', ok: true });  // slack
+    expect(r!.channelsSent[1]).toMatchObject({ channel: 'file', ok: false }); // email
+    expect(r!.channelsSent[1].detail).toMatch(/EROFS/);
+  });
+
   it('persists rendered text into payloadJson after delivery (so /alerts can show it)', async () => {
     const accountId = insAccount('Acme Corp');
     const scoreId = insScore(accountId, 50, 'hot');
@@ -444,6 +463,40 @@ describe('dispatchEngagementSpike', () => {
     insSignal(accountId, '2026-05-10T09:00:00.000Z');
     const r = await dispatchEngagementSpike(accountId, now);
     expect(r!.channelsSent[0].channel).toBe('file');
+  });
+
+  it('records channel="slack" + ok=false when fetch rejects during engagement_spike dispatch', async () => {
+    // Engagement-spike has its own SEND catch (separate from
+    // dispatchTierPromotion); the fetch-throws coverage on
+    // tier_promotion doesn't exercise it. Mock fetch to reject under
+    // spike conditions and verify the delivery records the network
+    // failure honestly.
+    ENV.SLACK_WEBHOOK_URL = 'https://hooks.slack.test/dead';
+    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('ECONNREFUSED'));
+    const accountId = insAccount();
+    const now = new Date('2026-05-10T12:00:00.000Z');
+    insSignal(accountId, '2026-05-10T11:00:00.000Z');
+    insSignal(accountId, '2026-05-10T10:00:00.000Z');
+    insSignal(accountId, '2026-05-10T09:00:00.000Z');
+    const r = await dispatchEngagementSpike(accountId, now);
+    expect(r!.channelsSent[0]).toMatchObject({ channel: 'slack', ok: false });
+    expect(r!.channelsSent[0].detail).toMatch(/ECONNREFUSED/);
+  });
+
+  it('records channel="file" + ok=false when engagement_spike file fallback throws', async () => {
+    // Mirror the tier-promotion test, for the engagement-spike branch.
+    const fs = await import('node:fs');
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => {
+      throw new Error('EACCES: permission denied');
+    });
+    const accountId = insAccount();
+    const now = new Date('2026-05-10T12:00:00.000Z');
+    insSignal(accountId, '2026-05-10T11:00:00.000Z');
+    insSignal(accountId, '2026-05-10T10:00:00.000Z');
+    insSignal(accountId, '2026-05-10T09:00:00.000Z');
+    const r = await dispatchEngagementSpike(accountId, now);
+    expect(r!.channelsSent[0]).toMatchObject({ channel: 'file', ok: false });
+    expect(r!.channelsSent[0].detail).toMatch(/EACCES/);
   });
 
   it('correctly windows mixed-offset captured_at timestamps (UTC normalization)', async () => {

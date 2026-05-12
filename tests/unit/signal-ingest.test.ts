@@ -695,4 +695,31 @@ describe('ingestSignal', () => {
     expect(result.contactId).toBe('ct_mixed');
     expect(db.select().from(s.contacts).all()).toHaveLength(1);
   });
+
+  // ----------------------------------------------------------------------
+  // captured_at normalization — defends against the "Zod accepts but
+  // SQLite strftime returns NULL" mismatch for offsets outside ±14:00.
+  // ----------------------------------------------------------------------
+
+  it('normalizes captured_at to UTC-Z form regardless of input offset', async () => {
+    // Input with a -07:00 offset (Pacific). Stored value must be the
+    // equivalent UTC-Z form, NOT the original offset string.
+    const result = await ingestSignal(basePayload({
+      account_domain: 'pst.example',
+      captured_at: '2026-05-10T05:00:00.000-07:00',  // = 12:00 UTC
+    }));
+    const row = db.select().from(s.evidence)
+      .where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(row?.capturedAt).toBe('2026-05-10T12:00:00.000Z');
+  });
+
+  it('normalizes captured_at preserves UTC-Z input unchanged', async () => {
+    const result = await ingestSignal(basePayload({
+      account_domain: 'utc.example',
+      captured_at: '2026-05-10T12:00:00.000Z',
+    }));
+    const row = db.select().from(s.evidence)
+      .where(eq(s.evidence.id, result.evidenceId)).get();
+    expect(row?.capturedAt).toBe('2026-05-10T12:00:00.000Z');
+  });
 });
