@@ -1,7 +1,11 @@
 import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { ingestSignal } from '@/lib/signals/ingest';
+import {
+  timingSafeStringEqual,
+  parseMediaType,
+  readBoundedBody,
+} from '@/lib/alerts/http';
 
 /**
  * POST /api/signals — the webhook ingest boundary.
@@ -49,59 +53,15 @@ import { ingestSignal } from '@/lib/signals/ingest';
  */
 
 /** Hard cap on raw request body size. The 8KB metadata cap + 1500-char
- * snippet + 500-char fact + small fixed fields fit well under 64KB. */
-const MAX_BODY_BYTES = 64 * 1024;
-
-function timingSafeStringEqual(a: string, b: string): boolean {
-  // Hash both inputs to fixed-length 32-byte digests so timingSafeEqual's
-  // equal-length precondition is met regardless of secret/presented lengths.
-  const ah = createHash('sha256').update(a).digest();
-  const bh = createHash('sha256').update(b).digest();
-  return timingSafeEqual(ah, bh);
-}
-
-/**
- * Read up to `maxBytes` from the request body, bailing on the first chunk
- * that crosses the cap. Caps peak allocation at roughly (maxBytes + one
- * chunk) regardless of whether Content-Length is present or honest — a
- * stronger DoS guarantee than buffering the whole body and checking after.
- */
-async function readBoundedBody(
-  req: Request,
-  maxBytes: number,
-): Promise<{ ok: true; text: string } | { ok: false; reason: 'too_large' | 'read_error' }> {
-  const reader = req.body?.getReader();
-  if (!reader) return { ok: true, text: '' };
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return { ok: false, reason: 'too_large' };
-      }
-      chunks.push(value);
-    }
-  } catch {
-    return { ok: false, reason: 'read_error' };
-  }
-  return { ok: true, text: Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8') };
-}
-
-/**
- * Parse the Content-Type media type. Returns the lowercased type/subtype
- * before any `;` parameters, or `null` if no Content-Type was sent.
+ * snippet + 500-char fact + small fixed fields fit well under 64KB.
  *
- * Strict exact-match prevents `text/plain; application/json` (which a
- * malicious sender could craft) from passing a permissive `.includes()`.
- */
-function parseMediaType(header: string | null): string | null {
-  if (header === null) return null;
-  return header.split(';')[0].trim().toLowerCase();
-}
+ * `timingSafeStringEqual`, `parseMediaType`, and `readBoundedBody` are
+ * imported from `lib/alerts/http.ts` (project-wide shared HTTP helpers;
+ * the `alerts/` path is historical — see that module's header). The
+ * inline auth flow stays here because /api/signals' "permissive in
+ * dev, trustedSender=false" semantics is specific to this route and
+ * not generalizable to the shared `requireInternalSecret` helper. */
+const MAX_BODY_BYTES = 64 * 1024;
 
 export async function POST(req: Request) {
   // (1) Production-config guard.

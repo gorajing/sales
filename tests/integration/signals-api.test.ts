@@ -449,4 +449,25 @@ describe('POST /api/signals — operational hardening', () => {
     const res = await POST(req);
     expect(res.status).toBe(413);
   });
+
+  it('body cap counts BYTES not UTF-16 code units (multi-byte payload)', async () => {
+    // Regression guard against the bug class fixed in Task 2.3 round
+    // 1 on the ack route — a `bodyText.length` check would let a
+    // multi-byte payload through if the char count was under cap.
+    // Build a body where UTF-8 bytes EXCEED 64KB but JS string
+    // length stays under 64KB to prove the streaming reader counts
+    // bytes. '日' is 3 bytes UTF-8 / 1 UTF-16 code unit, so 30000
+    // chars → 90000 bytes UTF-8, ~30000 UTF-16 code units.
+    delete process.env.SIGNAL_WEBHOOK_SECRET;
+    const multiByte = '日'.repeat(30_000);
+    expect(multiByte.length).toBeLessThan(64 * 1024);
+    expect(Buffer.byteLength(multiByte, 'utf8')).toBeGreaterThan(64 * 1024);
+    const req = new Request('http://x/api/signals', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' /* no content-length */ },
+      body: multiByte,
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(413);
+  });
 });

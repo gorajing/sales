@@ -284,6 +284,24 @@ describe('POST /api/scoring/recompute — body cap is bytes-based and streaming'
     const rec = await postRecompute(req);
     expect(rec.status).toBe(413);
   });
+
+  it('body cap counts BYTES not UTF-16 code units (multi-byte payload)', async () => {
+    // Same regression pattern as the ack route's test. A multi-byte
+    // payload where UTF-8 bytes > MAX_BODY_BYTES but UTF-16 length <
+    // MAX_BODY_BYTES would slip past a `bodyText.length` check. The
+    // streaming reader counts bytes per chunk and bails.
+    const multiByte = '日'.repeat(2_000);
+    const body = JSON.stringify({ accountId: 'acc_x', filler: multiByte });
+    expect(body.length).toBeLessThan(4 * 1024);
+    expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(4 * 1024);
+    const req = new Request('http://x/api/scoring/recompute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },  // no Content-Length
+      body,
+    });
+    const rec = await postRecompute(req);
+    expect(rec.status).toBe(413);
+  });
 });
 
 describe('POST /api/scoring/recompute — config validation is BEFORE account lookup', () => {

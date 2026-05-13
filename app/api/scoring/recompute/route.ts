@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { eq } from 'drizzle-orm';
@@ -10,6 +9,12 @@ import { route as routeAccount } from '@/lib/routing/route';
 import { parseRoutingRules, RoutingRuleParseError } from '@/lib/routing/rules';
 import { dispatchTierPromotion, dispatchEngagementSpike } from '@/lib/alerts/dispatch';
 import type { ChannelDelivery } from '@/lib/alerts/types';
+import {
+  requireInternalSecret,
+  parseMediaType,
+  readBoundedBody,
+  formatError,
+} from '@/lib/alerts/http';
 
 /**
  * POST /api/scoring/recompute — recompute score + routing for one account.
@@ -69,143 +74,31 @@ import type { ChannelDelivery } from '@/lib/alerts/types';
 
 /** Body size cap. The body is `{accountId: string}` — even a long
  *  account id fits well under 4 KB. Measured in bytes, not UTF-16
- *  code units (see readBoundedBody). */
+ *  code units (see `readBoundedBody` in lib/alerts/http.ts). */
 const MAX_BODY_BYTES = 4 * 1024;
 
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const Body = z.object({ accountId: z.string().min(1) }).strict();
 
-function timingSafeStringEqual(a: string, b: string): boolean {
-  // Equal-length precondition met via SHA-256 digest so the comparator
-  // doesn't reveal secret length via a fast-fail. Same pattern as
-  // /api/signals.
-  const ah = createHash('sha256').update(a).digest();
-  const bh = createHash('sha256').update(b).digest();
-  return timingSafeEqual(ah, bh);
-}
-
-function parseMediaType(header: string | null): string | null {
-  if (header === null) return null;
-  return header.split(';')[0].trim().toLowerCase();
-}
-
-/**
- * Read up to `maxBytes` from the request body, bailing on the first chunk
- * that crosses the cap. Peak memory is bounded at a small constant
- * multiple of `maxBytes` (streamed Uint8Array chunks + their Buffer-from
- * copies + the final concatenated Buffer + the UTF-8 decode), regardless
- * of whether Content-Length is present or honest. The point is the
- * boundedness, not the exact multiplier: a buffer-then-check approach
- * has *unbounded* peak memory for an attacker willing to lie about
- * Content-Length.
- *
- * Duplicated from app/api/signals/route.ts. The two HTTP boundaries share
- * this byte-accurate streaming pattern; if a third caller wants the same
- * primitive, extract to a shared `lib/http/body.ts`. Until then the
- * duplication is small and the surface area each route's logic is
- * different enough that a shared module would feel premature.
- */
-async function readBoundedBody(
-  req: Request,
-  maxBytes: number,
-): Promise<{ ok: true; text: string } | { ok: false; reason: 'too_large' | 'read_error' }> {
-  const reader = req.body?.getReader();
-  if (!reader) return { ok: true, text: '' };
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel().catch(() => undefined);
-        return { ok: false, reason: 'too_large' };
-      }
-      chunks.push(value);
-    }
-  } catch {
-    return { ok: false, reason: 'read_error' };
-  }
-  return { ok: true, text: Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8') };
-}
-
-/**
- * Format an unknown thrown value into a server-side log line that preserves
- * stack AND `cause` (recursively) when present, and is robust to non-Error
- * throws including `undefined`, functions, and symbols (where
- * `JSON.stringify` returns `undefined` rather than throwing).
- *
- * Never used for response bodies — those stay sanitized to
- * `{error: 'internal'}`. This is the only place internal failure details
- * should land.
- *
- * Two robustness guards on the recursive `cause` walk:
- *
- *   1. Maximum depth of 4. Linear cause chains are almost always 1-2 deep
- *      in practice; 4 is generous and bounds log size if some library
- *      decides to wrap errors deeply.
- *   2. Cycle detection via a visited set. A cyclic chain
- *      (`e.cause = e`, or two errors that point at each other) would
- *      otherwise infinite-recurse → stack overflow → the catch handler
- *      itself crashes → request never returns a sanitized 500. Cycle
- *      and depth-truncation are reported in the output so the operator
- *      knows the chain was abbreviated.
- */
-const MAX_CAUSE_DEPTH = 4;
-
-function formatError(err: unknown, depth = 0, seen: WeakSet<object> = new WeakSet()): string {
-  if (err instanceof Error) {
-    if (seen.has(err)) return `${err.name}: ${err.message} (cycle truncated)`;
-    seen.add(err);
-    const head = err.stack ?? `${err.name}: ${err.message}`;
-    if (err.cause === undefined) return head;
-    if (depth + 1 >= MAX_CAUSE_DEPTH) {
-      return `${head}\n  caused by: (depth limit ${MAX_CAUSE_DEPTH} reached)`;
-    }
-    return `${head}\n  caused by: ${formatError(err.cause, depth + 1, seen)}`;
-  }
-  // JSON.stringify can return `undefined` (not throw) for `undefined`,
-  // functions, and symbols — guard that path explicitly so we never
-  // end up logging the literal string "undefined" from the stringify
-  // helper.
-  try {
-    const j = JSON.stringify(err);
-    if (j !== undefined) return j;
-  } catch {
-    /* JSON.stringify throws on BigInts and circular refs — fall through */
-  }
-  return String(err);
-}
+// `requireInternalSecret`, `parseMediaType`, `readBoundedBody`, and
+// `formatError` live in lib/alerts/http.ts (project-wide shared HTTP
+// helpers; the `alerts/` path is historical — see that module's
+// header). This route's local copies were promoted there so future
+// HTTP boundaries get the byte-accurate cap + timing-safe compare +
+// production guard + cycle/depth-safe error formatting without
+// reintroducing already-fixed bugs.
 
 export async function POST(req: Request) {
-  // (1) Production-config guard. Mirror /api/signals: in prod, the
-  // operator must have explicitly set INTERNAL_API_SECRET — we refuse
-  // rather than silently allowing unauthenticated internal traffic.
-  const expectedSecret = process.env.INTERNAL_API_SECRET;
-  if (!expectedSecret && process.env.NODE_ENV === 'production') {
-    return NextResponse.json(
-      {
-        error: 'misconfigured',
-        detail: 'INTERNAL_API_SECRET must be set in production. ' +
-                'Unauthenticated mode is local-dev only.',
-      },
-      { status: 503 },
-    );
-  }
-
-  // (2) Auth. When the secret is set, the request MUST present a
-  // matching X-Internal-Secret. Comparison is timing-safe.
-  if (expectedSecret) {
-    const presented = req.headers.get('x-internal-secret');
-    if (presented === null || !timingSafeStringEqual(presented, expectedSecret)) {
-      return NextResponse.json(
-        { error: 'unauthorized', detail: 'missing or invalid X-Internal-Secret' },
-        { status: 401 },
-      );
-    }
-  }
+  // (1) Production-config guard + auth, in one. requireInternalSecret
+  // returns a 503 when NODE_ENV=production AND INTERNAL_API_SECRET is
+  // unset (fail safe), a 401 when the secret is set but the request
+  // doesn't present a matching X-Internal-Secret (timing-safe compare),
+  // and null when permissive-dev or correctly authenticated. See
+  // lib/alerts/http.ts for the shared implementation also used by
+  // /api/alerts/[id]/ack and /api/alerts.
+  const gate = requireInternalSecret(req);
+  if (gate) return gate;
 
   // (3) Content-Type and Content-Length pre-checks. Content-Type is
   // tolerated when absent (some HTTP clients omit it on small bodies)

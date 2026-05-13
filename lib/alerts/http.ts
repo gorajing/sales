@@ -2,16 +2,41 @@ import { NextResponse } from 'next/server';
 import { createHash, timingSafeEqual } from 'node:crypto';
 
 /**
- * HTTP helpers shared by the alerts endpoints. The pattern mirrors
- * /api/signals and /api/scoring/recompute, which each carry their own
- * local copies of timingSafeStringEqual / parseMediaType / readBoundedBody.
- * `readBoundedBody` is the third user of the streaming byte-cap pattern,
- * so it lives here as the shared definition; signals and recompute can
- * migrate to use it in a follow-up cleanup.
+ * **Project-wide shared HTTP helpers.** The `alerts/` path is historical:
+ * this module started as alerts-only, then absorbed the duplicated
+ * helpers from /api/signals and /api/scoring/recompute when the
+ * "copy-pasted-route reintroduced a fixed bug" pattern repeated twice
+ * (Task 2.2: missing fetch timeout; Task 2.3: req.text() body cap).
+ * Keep at this path until a Phase 3+ change creates the natural moment
+ * to rename to `lib/http/`.
  *
- * `requireInternalSecret` is alerts-specific in shape (env var + header
- * name are parameters), but the underlying production-guard + auth
- * pattern matches the other endpoints exactly.
+ * Helpers:
+ *   - `timingSafeStringEqual(a, b)` — SHA-256 + node:crypto
+ *     timingSafeEqual. Equal-length precondition is met via the digest
+ *     so the comparator doesn't reveal secret length via fast-fail.
+ *   - `parseMediaType(header)` — split-on-`;` lowercase. Strict-match
+ *     so `text/plain; application/json` (which an attacker could
+ *     craft) doesn't pass a permissive `.includes()` check.
+ *   - `requireInternalSecret(req, envVar?, headerName?)` — auth +
+ *     production-config gate in one. Returns NextResponse on deny,
+ *     null on allow.
+ *   - `readBoundedBody(req, maxBytes)` — streaming byte-accurate cap.
+ *     The point of this helper: a buffer-then-check approach has
+ *     unbounded peak memory when Content-Length is missing/lying, and
+ *     `String#length` measures UTF-16 code units (not bytes), so a
+ *     multi-byte payload would bypass it. This helper counts
+ *     `value.byteLength` per chunk and bails before the next read.
+ *   - `formatError(err)` — server-log formatter that preserves stack +
+ *     recursive `cause` with cycle + depth guards. Never used for
+ *     response bodies; those stay sanitized to `{error: 'internal'}`.
+ *
+ * Three HTTP routes use this module: /api/signals, /api/scoring/recompute,
+ * and the two alerts endpoints. /api/signals uses everything EXCEPT
+ * requireInternalSecret because its auth flow needs to set a
+ * downstream `trustedSender` flag and requireInternalSecret's
+ * allow/deny return shape doesn't distinguish "permissive (no secret
+ * set)" from "authenticated (secret set + correct)" — both return
+ * null. The other two routes use requireInternalSecret directly.
  */
 
 /** Equal-length precondition for timingSafeEqual is met via SHA-256
