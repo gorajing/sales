@@ -30,13 +30,14 @@ import { createHash, timingSafeEqual } from 'node:crypto';
  *     recursive `cause` with cycle + depth guards. Never used for
  *     response bodies; those stay sanitized to `{error: 'internal'}`.
  *
- * Three HTTP routes use this module: /api/signals, /api/scoring/recompute,
- * and the two alerts endpoints. /api/signals uses everything EXCEPT
- * requireInternalSecret because its auth flow needs to set a
- * downstream `trustedSender` flag and requireInternalSecret's
- * allow/deny return shape doesn't distinguish "permissive (no secret
- * set)" from "authenticated (secret set + correct)" — both return
- * null. The other two routes use requireInternalSecret directly.
+ * Four HTTP routes use this module: /api/signals,
+ * /api/scoring/recompute, GET /api/alerts, and POST /api/alerts/[id]/ack.
+ * The latter three use requireInternalSecret directly; /api/signals
+ * uses everything ELSE but keeps its own inline auth flow because its
+ * `trustedSender` flag needs to distinguish "permissive (no secret
+ * set)" from "authenticated (secret set + correct)" — and
+ * requireInternalSecret's allow/deny return shape (null/NextResponse)
+ * collapses both paths to a single "allow" signal.
  */
 
 /** Equal-length precondition for timingSafeEqual is met via SHA-256
@@ -65,7 +66,13 @@ export function parseMediaType(header: string | null): string | null {
 export function requireInternalSecret(
   req: Request,
   envVar = 'INTERNAL_API_SECRET',
-  headerName = 'x-internal-secret',
+  // Canonical display capitalization. `req.headers.get(...)` is
+  // case-insensitive so the same string works for the lookup AND the
+  // operator-facing error detail — preserves the exact wording the
+  // pre-consolidation inline auth produced ("missing or invalid
+  // X-Internal-Secret"), which is what existing callers (and any
+  // operator dashboards parsing the error body) rely on.
+  headerName = 'X-Internal-Secret',
 ): NextResponse | null {
   const expected = process.env[envVar];
   if (!expected && process.env.NODE_ENV === 'production') {
@@ -82,7 +89,7 @@ export function requireInternalSecret(
     const presented = req.headers.get(headerName);
     if (presented === null || !timingSafeStringEqual(presented, expected)) {
       return NextResponse.json(
-        { error: 'unauthorized', detail: `missing or invalid ${headerName.toUpperCase()}` },
+        { error: 'unauthorized', detail: `missing or invalid ${headerName}` },
         { status: 401 },
       );
     }
@@ -96,12 +103,12 @@ export function requireInternalSecret(
  * multiple of `maxBytes`, regardless of whether Content-Length is
  * present or honest. Byte-accurate; counts bytes, not UTF-16 code units.
  *
- * Duplicated from app/api/signals/route.ts and
- * app/api/scoring/recompute/route.ts. With three HTTP boundaries now
- * needing the same primitive, this is the time to consolidate
- * (recompute's local copy noted "extract on third caller"). For now
- * the alerts endpoints use this version; recompute can migrate in a
- * follow-up cleanup so this commit stays scoped to /alerts.
+ * Shared by /api/signals, /api/scoring/recompute, and the alerts
+ * endpoints — the canonical implementation. Earlier versions lived as
+ * local copies in each route file; the duplication twice reintroduced
+ * already-fixed bugs (Task 2.2 missing fetch timeout; Task 2.3
+ * `req.text()` + UTF-16 length check), which motivated this
+ * consolidation.
  */
 export async function readBoundedBody(
   req: Request,
