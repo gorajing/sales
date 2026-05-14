@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import type { ScoreRationaleItem } from '@/lib/scoring/score';
 import type { Tier } from '@/lib/scoring/rules';
 import { TierBadge } from './TierBadge';
@@ -18,6 +17,18 @@ import { fmtWeight } from './format';
  * snippet without scrolling. The `title` attribute surfaces the stored
  * `reason` (which contains the matched predicate) for debugging without
  * cluttering the visible row.
+ *
+ * **Cites links use plain `<a>`, NOT Next.js `<Link>`.** The evidence
+ * page renders a `target:ring-2 target:ring-blue-400` highlight on the
+ * row matching the URL fragment so the operator can visually identify
+ * which `<li>` was anchored. That highlight depends on the CSS
+ * `:target` pseudo-class, which the browser only updates on full
+ * document-parse + hashchange events — not on Next.js client-side
+ * History API pushes. With `<Link>` the operator landed on the right
+ * page and the right scroll position, but the ring never appeared
+ * because `:target` was never re-evaluated. Plain `<a>` triggers a
+ * full document navigation, which is the cheap way to make `:target`
+ * fire reliably. Manual Playwright check 2026-05-14 found this.
  *
  * Server-rendered; no client state. The empty state explicitly says
  * "no matching signals" so an operator can distinguish "score is zero
@@ -66,12 +77,12 @@ export function ScoreRationale({
               <span className="font-mono text-xs w-12 shrink-0">{fmtWeight(it.weight)}</span>
               <span className="text-slate-500 text-xs">
                 cites{' '}
-                <Link
+                <a
                   href={`/accounts/${accountId}/evidence#${it.evidence_id}`}
                   className="font-mono text-blue-700 hover:underline"
                 >
                   {it.evidence_id}
-                </Link>
+                </a>
               </span>
             </li>
           ))}
