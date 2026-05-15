@@ -187,7 +187,12 @@ describe('SignalConnector contract', () => {
     const webhookProducer: ConnectorPayload = { ...valid, captured_by: 'webhook' };
     expect(webhookProducer.source).toBe('github_event');
 
-    // @ts-expect-error — 'manual' is in CapturedBy but not connector_*.
+    // @ts-expect-error — 'manual' isn't in CapturedBy at all (it exists
+    // in the DB enum for paste-created evidence, but the Zod CAPTURED_BY
+    // union doesn't include it because manual paste doesn't go through
+    // the webhook ingest path). So this case proves the narrowing
+    // catches arbitrary unknown values too, not just other CapturedBy
+    // members.
     const manualProducer: ConnectorPayload = { ...valid, captured_by: 'manual' };
     expect(manualProducer.source).toBe('github_event');
   });
