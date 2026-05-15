@@ -192,6 +192,9 @@ describe('parseWatchList', () => {
 
 Some prose explaining \`target\`, \`signals\`, and \`classification\`.
 
+It even mentions "the - target field above" in prose, without a colon,
+which should not match the entry marker regex.
+
 ## real-entry
 - target: repo:foo/bar
 - signals: [stars]
@@ -200,6 +203,42 @@ Some prose explaining \`target\`, \`signals\`, and \`classification\`.
     const list = parseWatchList(md);
     expect(list).toHaveLength(1);
     expect(list[0].target).toBe('repo:foo/bar');
+  });
+
+  it('strips fenced code blocks so example syntax in docs is not parsed as a real entry', () => {
+    // Codex-flagged: a markdown example like the one inside the
+    // fence below would otherwise be parsed as a real watch entry.
+    // If the operator's example is a complete-looking entry, they'd
+    // silently get an extra repo polled; if it has placeholders
+    // (`repo:owner/name`), they'd get a Zod error at startup that
+    // they wouldn't know how to fix because the source is in their
+    // docs section.
+    //
+    // The parser strips ``` fences before section matching. This
+    // test pins both directions: the fenced example is NOT parsed
+    // as an entry, AND the real entry below it IS parsed.
+    const md = `
+## Example
+
+Here's what a watch entry looks like:
+
+\`\`\`md
+- target: repo:owner/name
+- signals: [stars]
+- classification: prospect
+\`\`\`
+
+## real-entry
+- target: repo:foo/bar
+- signals: [stars]
+- classification: prospect
+`;
+    const list = parseWatchList(md);
+    expect(list).toHaveLength(1);
+    expect(list[0].target).toBe('repo:foo/bar');
+    // Confirm the placeholder example was NOT parsed (else we'd
+    // have repo:owner/name in the list too).
+    expect(list.find((e) => e.target.includes('owner/name'))).toBeUndefined();
   });
 
   it('rejects a section with no signals line', () => {

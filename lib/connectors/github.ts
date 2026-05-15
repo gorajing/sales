@@ -62,31 +62,55 @@ export type WatchEntry = z.infer<typeof WatchEntrySchema>;
  *
  * # Section detection rule
  *
- * The parser splits on `^## ` and **treats a section as a watch entry
- * iff its body contains a `- target:` line**. Doc-only sections
- * (e.g. `## How matching works` with no `- target:`) are skipped
- * silently. This is intentionally lenient about file layout:
- *   - operators can put docs anywhere, with `##` headings used freely
- *   - the `---` horizontal rule between docs and entries is a
- *     convention, not a parser requirement; a stray `---` in a doc
- *     paragraph doesn't shift the boundary
+ * The parser splits on `^## ` and treats a section as a watch entry
+ * iff its body contains any of the three entry-field lines
+ * (`- target:`, `- signals:`, `- classification:`). Sections with
+ * none of those lines are docs (e.g. `## How matching works` with
+ * prose only) and are silently skipped. Sections with at least one
+ * but missing others surface a loud missing-field error so a
+ * typoed entry doesn't silently disappear.
  *
- * It is intentionally strict about content of recognized entries:
- *   - any section with `- target:` MUST also have valid `signals` and
- *     `classification`; missing or malformed → whole-file rejection
- *   - typos on the field name `target` (e.g. `- targt:`) cause the
- *     section to be skipped, BUT the file-level "no entries loaded"
- *     check below catches the case where every entry typo'd out
+ * Before matching, fenced code blocks (```...```) are stripped so
+ * markdown examples of entry syntax inside docs don't get parsed as
+ * real entries. Operators routinely paste an example like
+ *   ```md
+ *   - target: repo:owner/name
+ *   ```
+ * to teach the next person what the file looks like; without the
+ * strip, the example would either fail validation (placeholder
+ * values) or, worse, silently install a phantom watch entry.
  *
- * Operators who want zero leniency should keep a single watch entry
- * with `- target:` and never write doc subsections; the recommended
- * file layout above gets them most of that by convention.
+ * Layout is intentionally lenient (operators can put docs anywhere
+ * with `##` headings used freely); recognized entries are
+ * intentionally strict (any field present forces the missing-fields
+ * check, and validated entries must pass Zod).
  */
 export function parseWatchList(md: string): WatchEntry[] {
   const out: WatchEntry[] = [];
+  // Strip fenced code blocks before any further processing. A
+  // ``` line opens a fence; the next ``` closes it. Lines inside
+  // (and the fence markers themselves) are dropped. This handles
+  // language-tagged fences (```ts, ```md) and untagged ones alike.
+  // A file that closes a fence without opening one (operator
+  // mistake) is treated as opening — the remainder of the file is
+  // dropped — which is loud-failure shaped: zero entries → operator
+  // notices the watch list isn't polling anything. We prefer this
+  // over silently parsing a half-fenced example as an entry.
+  const lines = md.split('\n');
+  const sanitizedLines: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (/^```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) sanitizedLines.push(line);
+  }
+  const sanitized = sanitizedLines.join('\n');
+
   // Split on `^## ` headings. The first chunk is the file preamble
   // (anything before the first `##`), which we drop.
-  const sections = md.split(/^## /m).slice(1);
+  const sections = sanitized.split(/^## /m).slice(1);
   const errors: string[] = [];
 
   // Marker for "this section is intended to be a watch entry, not
