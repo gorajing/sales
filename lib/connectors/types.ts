@@ -64,25 +64,42 @@ export type ConnectorPayload = Omit<SignalPayload, 'captured_by'> & {
  * deploy time (API keys, fixture paths, etc.), so they are
  * trusted by definition — the orchestrator calls
  * `ingestSignal(event, { trustedSender: true })`. The trust
- * boundary is layered:
+ * boundary is layered, and the two layers compose into a stronger
+ * guarantee than either alone:
  *
- *   - TypeScript level: `ConnectorPayload` (below) narrows
- *     `captured_by` to the `connector_*` variants — a connector
- *     can't compile if it omits `captured_by` or sets it to
- *     `'webhook'`. This blocks the most common bypass: emitting a
- *     non-connector-only source (e.g. `intent_data`) with no
- *     producer label and inheriting trust from the orchestrator's
- *     `trustedSender` flag.
- *   - Zod level: `SignalPayload`'s `.strict().refine(...)` enforces
- *     the source/producer matrix for connector-only sources. A
- *     connector that emits `source: 'github_event'` with
- *     `captured_by: 'connector_outreach'` (mismatched) fails Zod
- *     inside ingestSignal — same path as a misconfigured webhook.
- *   - Runtime level: the `source` field must still be in
+ *   - TypeScript level: `ConnectorPayload` (below) requires
+ *     `captured_by` (the schema's optional field becomes required)
+ *     and narrows it to the `connector_*` subset. A connector that
+ *     omits `captured_by` or sets it to `'webhook'` / `'manual'`
+ *     doesn't compile.
+ *   - Zod level: `SignalPayload`'s `.strict().refine(...)` runs for
+ *     EVERY source, in two branches:
+ *       a. For CONNECTOR_ONLY_SOURCES (github_event, crm_record,
+ *          engagement_event): captured_by MUST be one of the matching
+ *          connector_* values for that source (e.g. connector_github
+ *          for github_event). Mismatched producers (github_event +
+ *          connector_outreach) fail.
+ *       b. For all OTHER sources (intent_data, web_traffic, etc.):
+ *          captured_by MUST be undefined or `'webhook'`. ANY explicit
+ *          connector_* value fails — non-connector-only sources can
+ *          never legitimately claim a connector producer.
+ *
+ * The two layers compose: TypeScript forces every `ConnectorPayload`
+ * to carry a `connector_*` captured_by, and Zod's branch (b)
+ * forbids `connector_*` for non-connector-only sources. So a
+ * SignalConnector that tries to emit `source: 'intent_data'` will
+ * fail Zod no matter which connector_* it picks. The only sources a
+ * connector can successfully emit are the ones in
+ * CONNECTOR_ONLY_SOURCES, paired with their matching producer.
+ *
+ *   - Runtime level: the `source` field must also be in
  *     `TRUSTED_SOURCES` for the row to land as `verified` rather
- *     than `pending_audit`. A connector emitting a non-trusted
- *     source label persists evidence as pending_audit (correct —
- *     the source isn't endorsed) even with `trustedSender: true`.
+ *     than `pending_audit`. All current CONNECTOR_ONLY_SOURCES are
+ *     in TRUSTED_SOURCES today, but a future source added to
+ *     CONNECTOR_ONLY_SOURCES without being added to
+ *     TRUSTED_SOURCES would persist as `pending_audit` even via
+ *     a connector with `trustedSender: true` — the trust check is
+ *     orthogonal to the producer matrix.
  *
  * # Idempotency
  *

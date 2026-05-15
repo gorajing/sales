@@ -99,12 +99,14 @@ describe('SignalConnector contract', () => {
     // the rejection to the matrix in particular, so the regression
     // guard remains the right shape under future schema evolution.
     //
-    // Note: we use `as ConnectorPayload` because TypeScript narrows
-    // ConnectorPayload to a connector_* captured_by, which is what
-    // a real connector implementation must satisfy. The cast lets
-    // the fixture build a deliberately-misaligned payload (matching
-    // pair would be source: 'github_event' + captured_by:
-    // 'connector_github') to exercise the runtime rejection path.
+    // No type cast — github_event + connector_outreach is a valid
+    // ConnectorPayload at the TS level (both are connector_* values,
+    // captured_by is set, source is valid). The runtime matrix is
+    // what catches the mismatch. Removing the cast keeps the test
+    // honest: if ConnectorPayload tightens further (e.g. a future
+    // discriminated union pairing source to producer at the type
+    // level), this fixture would correctly fail to compile and force
+    // the maintainer to update.
     const badConnector: SignalConnector = {
       name: 'fixture-bad',
       async fetchSince(): Promise<ConnectorPayload[]> {
@@ -117,7 +119,7 @@ describe('SignalConnector contract', () => {
           source_url: 'https://github.com/foo/bar/stargazers',
           snippet: 'mismatched producer — github_event source but connector_outreach captured_by',
           captured_at: '2026-05-10T12:00:00.000Z',
-        } as ConnectorPayload];
+        }];
       },
     };
 
@@ -128,26 +130,31 @@ describe('SignalConnector contract', () => {
     } catch (err) {
       caught = err;
     }
-    // Specifically a ZodError; specifically the source/captured_by
+    // Specifically a ZodError, AND specifically the source/captured_by
     // matrix message. If a future refactor moves this validation
     // elsewhere or changes its wording, the test should fail loudly
-    // and force the maintainer to confirm the rejection still happens.
+    // and force the maintainer to confirm the rejection still happens
+    // — and through this code path, not via some unrelated validator.
     expect(caught).toBeInstanceOf(ZodError);
     const zodErr = caught as ZodError;
     const flat = JSON.stringify(zodErr.issues);
     expect(flat).toMatch(/captured_by/i);
+    expect(flat).toMatch(/source\/captured_by mismatch/i);
     // No row written — the rejection happens before any DB work.
     expect(db.select().from(schemaMod.evidence).all()).toHaveLength(0);
   });
 
-  it('TypeScript prevents a connector from omitting captured_by (compile-time invariant)', () => {
-    // The `ConnectorPayload` type narrows captured_by from optional
-    // to required AND to the connector_* subset. This test is a
-    // type-level smoke check: building a valid ConnectorPayload
-    // succeeds, and the (commented) attempt to build one WITHOUT
-    // captured_by would fail at compile time. The test is here so
-    // a future refactor that loosens the type accidentally is
-    // caught by a runtime probe, not just by silent type drift.
+  it('TypeScript prevents omitting captured_by or using a non-connector producer (compile-time invariant)', () => {
+    // Real negative compile-time assertions via @ts-expect-error. If
+    // ConnectorPayload is ever loosened back to optional captured_by,
+    // or widened past `connector_*`, these directives stop suppressing
+    // anything and TypeScript reports "Unused '@ts-expect-error'
+    // directive" — the typecheck fails, the test fails, the regression
+    // is caught.
+    //
+    // The runtime `expect` after each assignment is incidental; the
+    // value of this test is the typecheck behavior on the surrounding
+    // assignments.
     const valid: ConnectorPayload = {
       source: 'github_event',
       captured_by: 'connector_github',
@@ -160,24 +167,29 @@ describe('SignalConnector contract', () => {
     };
     expect(valid.captured_by).toBe('connector_github');
 
-    // The following would fail to compile (uncomment to verify):
-    //   const missing: ConnectorPayload = {
-    //     source: 'github_event',
-    //     // captured_by intentionally missing — TS reports
-    //     //   Property 'captured_by' is missing in type ...
-    //     account_domain: 'x.example',
-    //     signal_type: 'engagement',
-    //     fact: 'starred',
-    //     source_url: 'https://github.com/x/y',
-    //     snippet: 'starred x.example',
-    //     captured_at: '2026-05-10T12:00:00.000Z',
-    //   };
-    //
-    //   const wrongProducer: ConnectorPayload = {
-    //     ...valid,
-    //     captured_by: 'webhook',  // TS reports: not assignable to
-    //                              //   '"connector_github" | "connector_outreach" | ...'
-    //   };
+    // @ts-expect-error — captured_by is REQUIRED on ConnectorPayload.
+    // If this directive ever has nothing to suppress, ConnectorPayload
+    // has been loosened — fail loud.
+    const missingCapturedBy: ConnectorPayload = {
+      source: 'github_event',
+      account_domain: 'x.example',
+      signal_type: 'engagement',
+      fact: 'starred',
+      source_url: 'https://github.com/x/y',
+      snippet: 'starred x.example',
+      captured_at: '2026-05-10T12:00:00.000Z',
+    };
+    expect(missingCapturedBy.source).toBe('github_event');
+
+    // @ts-expect-error — captured_by 'webhook' is NOT a connector_*
+    // value, so it's not assignable to ConnectorCapturedBy. If this
+    // ever stops suppressing, the narrowing is broken.
+    const webhookProducer: ConnectorPayload = { ...valid, captured_by: 'webhook' };
+    expect(webhookProducer.source).toBe('github_event');
+
+    // @ts-expect-error — 'manual' is in CapturedBy but not connector_*.
+    const manualProducer: ConnectorPayload = { ...valid, captured_by: 'manual' };
+    expect(manualProducer.source).toBe('github_event');
   });
 
   it('ConnectorError carries the cause and identifies as a typed connector failure', () => {
