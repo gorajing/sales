@@ -378,18 +378,24 @@ describe('GitHubConnector.fetchSince — time filtering', () => {
 // --------------------------------------------------------------------------
 
 describe('GitHubConnector.fetchSince — pagination', () => {
-  it('drains multiple pages until the first event of a page is older than `since`', async () => {
-    // GitHub returns events newest-first. The drain stops when the
-    // FIRST event of a freshly fetched page is older than `since`,
-    // because every subsequent event in that page (and all later
-    // pages) is older too — a hard cutoff.
+  it('drains across pages, filtering old events per-event (no early-stop on first-old)', async () => {
+    // Earlier design: stop as soon as any page contained an event
+    // older than `since`. That relied on GitHub's Events API
+    // returning events sorted newest-first ACROSS pages, which the
+    // API docs don't explicitly guarantee — under slight cross-page
+    // disorder a fresh event on page N+1 would be silently missed.
     //
-    // Page 1 (newest first):
-    //   t = 11:05, 11:04, 11:03  ← all > since (10:00)
-    // Page 2:
-    //   t = 11:02, 11:01, 11:00  ← still > since
-    // Page 3:
-    //   t = 09:59 (first event < since) → stop draining
+    // Current design: drain to empty / PAGE_CAP, filter individual
+    // events by their own timestamp, and rely on the
+    // `evidence.dedupe_key` UNIQUE index to absorb redundant
+    // fetches. GitHub retains ~300 events per repo total, so the
+    // worst-case fetch count for a hot repo is ~3 pages anyway.
+    //
+    // Test layout (newest first, since=10:00):
+    //   Page 1: 3 fresh events
+    //   Page 2: 3 fresh events
+    //   Page 3: 1 OLD event (filtered per-event)
+    //   Page 4 (trailing empty in makeClient): [] → stop
     const { client, spy } = makeClient([
       [
         starEvent({ id: '5', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:05:00Z' }),
@@ -409,17 +415,68 @@ describe('GitHubConnector.fetchSince — pagination', () => {
       { target: 'repo:foo/bar', signals: ['stars'], classification: 'prospect' },
     ]);
     const payloads = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
-    // 3 from page 1 + 3 from page 2 + 0 from page 3 (boundary event was
-    // dropped, then we stopped — there was nothing newer)
+    // 3 (page 1) + 3 (page 2) + 0 (page 3 — sole event was old) = 6.
+    // The old event on page 3 is filtered out per-event, NOT used
+    // as an early-stop signal — page 4 is the empty-page that
+    // terminates the drain.
     expect(payloads).toHaveLength(6);
-    // We fetched exactly 3 pages. A buggy implementation that fetched
-    // only page 1 would have 3 payloads; one that didn't stop at the
-    // older-than-since boundary would have fetched a 4th page and the
-    // spy count would be 4+. Pin the stop condition.
-    expect(spy).toHaveBeenCalledTimes(3);
-    // page args: 1, 2, 3.
+    expect(spy).toHaveBeenCalledTimes(4);
     expect(spy.mock.calls[0][0]).toMatchObject({ owner: 'foo', repo: 'bar', page: 1 });
-    expect(spy.mock.calls[2][0]).toMatchObject({ page: 3 });
+    expect(spy.mock.calls[3][0]).toMatchObject({ page: 4 });
+  });
+
+  it('keeps newer events on a later page even if an earlier page contains an old one (no early-stop)', async () => {
+    // The whole point of dropping the early-stop: cross-page
+    // ordering is not contractually guaranteed by GitHub's Events
+    // API. This test pins that we do NOT trade correctness for an
+    // empty-fetch saving — if page 1 has a stray-old event but
+    // page 2 has fresh events, we keep both.
+    //
+    // A regression that re-introduces "first old in page → stop"
+    // would fetch page 1 only and miss the fresh event on page 2,
+    // and this test would fail loudly.
+    const { client, spy } = makeClient([
+      [
+        starEvent({ id: '1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:05:00Z' }),
+        // Stray old event on page 1 — possible under cross-page
+        // disorder.
+        starEvent({ id: '2', actor: 'alice', repo: 'foo/bar', ts: '2026-05-09T11:05:00Z' }),
+      ],
+      [
+        starEvent({ id: '3', actor: 'bob',   repo: 'foo/bar', ts: '2026-05-10T11:06:00Z' }),
+      ],
+    ]);
+    const c = new GitHubConnector(client, [
+      { target: 'repo:foo/bar', signals: ['stars'], classification: 'prospect' },
+    ]);
+    const payloads = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    // alice from page 1 + bob from page 2 = 2 fresh. The old alice
+    // event was filtered. Total fetches: 1, 2, 3 (page 3 = empty).
+    expect(payloads.map((p) => p.account_domain).sort()).toEqual([
+      'github.com/alice', 'github.com/bob',
+    ]);
+    expect(spy).toHaveBeenCalledTimes(3);
+  });
+
+  it('a single mixed page (some events kept, some dropped per-event) emits the kept ones intact', async () => {
+    // Codex-flagged test gap: the earlier suite had no test for a
+    // single page with mixed-age events. Pin the per-event filter.
+    const { client } = makeClient([
+      [
+        starEvent({ id: 'k1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:05:00Z' }),
+        starEvent({ id: 'd1', actor: 'eve',   repo: 'foo/bar', ts: '2026-05-09T11:05:00Z' }),
+        starEvent({ id: 'k2', actor: 'bob',   repo: 'foo/bar', ts: '2026-05-10T11:04:00Z' }),
+        starEvent({ id: 'd2', actor: 'mal',   repo: 'foo/bar', ts: '2026-05-08T11:05:00Z' }),
+      ],
+    ]);
+    const c = new GitHubConnector(client, [
+      { target: 'repo:foo/bar', signals: ['stars'], classification: 'prospect' },
+    ]);
+    const payloads = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    expect(payloads).toHaveLength(2);
+    expect(payloads.map((p) => p.account_domain).sort()).toEqual([
+      'github.com/alice', 'github.com/bob',
+    ]);
   });
 
   it('respects a hard page cap so a misconfigured `since=Date(0)` cannot drain history forever', async () => {
@@ -617,6 +674,159 @@ describe('GitHubConnector.fetchSince — multiple watch entries', () => {
 // Idempotency
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Robustness against malformed events
+// --------------------------------------------------------------------------
+
+describe('GitHubConnector.fetchSince — robustness', () => {
+  it('skips events whose actor.login violates GitHub username rules', async () => {
+    // Codex-flagged: actor.login feeds account_domain. If GitHub
+    // ever returned a malformed login (slash, whitespace, empty),
+    // we'd coin an impostor-looking account row like
+    // `github.com/foo/bar` that downstream routing might treat as
+    // genuine. The connector skips invalid logins.
+    const bad: RepoEvent[] = [
+      // Slash — most dangerous (would split the account_domain path).
+      starEvent({ id: '1', actor: 'foo/bar', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+      // Whitespace.
+      starEvent({ id: '2', actor: 'has space', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+      // Leading hyphen — GitHub doesn't allow this.
+      starEvent({ id: '3', actor: '-leading', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+      // Trailing hyphen.
+      starEvent({ id: '4', actor: 'trailing-', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+      // Consecutive hyphens.
+      starEvent({ id: '5', actor: 'has--double', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+      // Empty string (treated as falsy → already skipped, but pin it).
+      starEvent({ id: '6', actor: '', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+      // Good login — survives.
+      starEvent({ id: '7', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+    ];
+    const { client } = makeClient([bad]);
+    const c = new GitHubConnector(client, [
+      { target: 'repo:foo/bar', signals: ['stars'], classification: 'prospect' },
+    ]);
+    const payloads = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].account_domain).toBe('github.com/alice');
+  });
+
+  it('skips events with a malformed created_at (NaN) without affecting other events on the page', async () => {
+    // Codex-flagged: `new Date('not-a-date').getTime()` is NaN.
+    // NaN compares false against everything, so the old code would
+    // not catch it via `ts < sinceMs` and would emit it with
+    // captured_at='not-a-date' — which ingestSignal would then
+    // reject. The connector skips malformed timestamps and
+    // continues to process the rest of the page.
+    const { client } = makeClient([
+      [
+        {
+          id: 'bad', type: 'WatchEvent', actor: { login: 'alice' },
+          repo: { name: 'foo/bar' }, created_at: 'not-a-date',
+          payload: { action: 'started' },
+        } as RepoEvent,
+        starEvent({ id: '2', actor: 'bob', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z' }),
+      ],
+    ]);
+    const c = new GitHubConnector(client, [
+      { target: 'repo:foo/bar', signals: ['stars'], classification: 'prospect' },
+    ]);
+    const payloads = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0].account_domain).toBe('github.com/bob');
+  });
+
+  it('does not split a surrogate pair when trimming a long issue body to the 1500-char cap', async () => {
+    // Codex-flagged nit: `.slice(0, 1500)` operates on UTF-16 code
+    // units, so a 4-byte emoji landing at the boundary could be
+    // split, leaving a dangling high surrogate. The safeSlice
+    // helper backs off the cap by one if the boundary char is a
+    // high surrogate. We construct a body whose 1500th UTF-16
+    // unit is a high surrogate to exercise it.
+    //
+    // We use the 'pile of poo' emoji (U+1F4A9) — encoded in UTF-16
+    // as the surrogate pair [0xD83D, 0xDCA9]. The body's length
+    // before the emoji is set so the emoji starts exactly at
+    // character 1499 (a high surrogate at index 1499, low
+    // surrogate at 1500).
+    const title = 'T';
+    // title + '\n\n' = 3 chars. We want char 1499 to be the high
+    // surrogate, so padding length = 1499 - 3 = 1496.
+    const padding = 'a'.repeat(1496);
+    const body = padding + '💩 trailing';  // poo + ' trailing'
+    const { client } = makeClient([[
+      issueOpenedEvent({
+        id: '1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z',
+        title, body, html_url: 'https://github.com/foo/bar/issues/1',
+      }),
+    ]]);
+    const c = new GitHubConnector(client, [
+      { target: 'repo:foo/bar', signals: ['issue_create'], classification: 'prospect' },
+    ]);
+    const [p] = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    // Snippet must be capped to 1499 (one less than 1500 due to
+    // the surrogate trim) — and the trailing char must NOT be a
+    // dangling high surrogate. The well-formedness check: every
+    // high surrogate must be followed by a low surrogate.
+    expect(p.snippet.length).toBeLessThanOrEqual(1500);
+    for (let i = 0; i < p.snippet.length; i++) {
+      const code = p.snippet.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        // High surrogate; the next char MUST be a low surrogate.
+        const next = p.snippet.charCodeAt(i + 1);
+        expect(next).toBeGreaterThanOrEqual(0xdc00);
+        expect(next).toBeLessThanOrEqual(0xdfff);
+      }
+    }
+  });
+});
+
+// --------------------------------------------------------------------------
+// Real watch file
+// --------------------------------------------------------------------------
+
+describe('parseWatchList — committed data/github-watch.md', () => {
+  it('successfully parses the committed watch file (regression: codex round 1 blocker)', async () => {
+    // The original commit shipped a data/github-watch.md whose own
+    // documentation used ## headings; parseWatchList treated them
+    // as missing-field entries and the whole file failed to load
+    // at startup. The fix splits on `---` so the preamble docs are
+    // ignored. This test loads the actual committed file, which is
+    // the only way to catch a regression of that exact bug — any
+    // fixture inside the test file would diverge from the shipped
+    // content.
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const md = readFileSync(resolve(process.cwd(), 'data/github-watch.md'), 'utf8');
+    const entries = parseWatchList(md);
+    // Don't pin exact entries — operators will add and remove
+    // them over time. Just confirm we got at least one and that
+    // each parses as a valid WatchEntry shape (Zod-narrowed).
+    expect(entries.length).toBeGreaterThanOrEqual(1);
+    for (const e of entries) {
+      expect(e.target.startsWith('repo:')).toBe(true);
+      expect(e.signals.length).toBeGreaterThanOrEqual(1);
+      expect(['prospect', 'competitor', 'neutral']).toContain(e.classification);
+    }
+  });
+
+  it('still parses a file with no --- separator (header-less watch file)', () => {
+    // The separator is a docs-convention. If an operator writes a
+    // minimal watch file with no preamble, every section is an
+    // entry. Test pins this fallback so a future "require ---"
+    // refactor breaks loudly.
+    const md = `## repo-one
+- target: repo:foo/bar
+- signals: [stars]
+- classification: prospect
+`;
+    expect(parseWatchList(md)).toHaveLength(1);
+  });
+});
+
+// --------------------------------------------------------------------------
+// Idempotency
+// --------------------------------------------------------------------------
+
 describe('GitHubConnector.fetchSince — idempotency', () => {
   it('produces identical snippet/source_url for the same upstream event across two polls', async () => {
     // The orchestrator-level safety net is `evidence.dedupe_key`'s
@@ -644,6 +854,49 @@ describe('GitHubConnector.fetchSince — idempotency', () => {
     expect(a.snippet).toBe(b.snippet);
     expect(a.source_url).toBe(b.source_url);
     expect(a.account_domain).toBe(b.account_domain);
+    expect(a.captured_at).toBe(b.captured_at);
+  });
+
+  it('issue_create snippet is byte-identical across two polls of the same event', async () => {
+    // Codex-flagged test gap: the original idempotency test only
+    // exercised the star path. Issue and PR snippets concatenate
+    // title + body, and a future refactor that introduced (say)
+    // a timestamp into the snippet for issues would silently break
+    // dedupe for that path while the star test stayed green.
+    const ev = issueOpenedEvent({
+      id: 'iss-1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z',
+      title: 'Bug', body: 'Repro: ...',
+      html_url: 'https://github.com/foo/bar/issues/1',
+    });
+    const c1 = new GitHubConnector(makeClient([[ev]]).client, [
+      { target: 'repo:foo/bar', signals: ['issue_create'], classification: 'prospect' },
+    ]);
+    const c2 = new GitHubConnector(makeClient([[ev]]).client, [
+      { target: 'repo:foo/bar', signals: ['issue_create'], classification: 'prospect' },
+    ]);
+    const [a] = await c1.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    const [b] = await c2.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    expect(a.snippet).toBe(b.snippet);
+    expect(a.source_url).toBe(b.source_url);
+    expect(a.captured_at).toBe(b.captured_at);
+  });
+
+  it('pr_merge_external snippet is byte-identical across two polls of the same event', async () => {
+    const ev = prClosedEvent({
+      id: 'pr-1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z',
+      title: 'Refactor', body: 'See description',
+      html_url: 'https://github.com/foo/bar/pull/1', merged: true,
+    });
+    const c1 = new GitHubConnector(makeClient([[ev]]).client, [
+      { target: 'repo:foo/bar', signals: ['pr_merge_external'], classification: 'competitor' },
+    ]);
+    const c2 = new GitHubConnector(makeClient([[ev]]).client, [
+      { target: 'repo:foo/bar', signals: ['pr_merge_external'], classification: 'competitor' },
+    ]);
+    const [a] = await c1.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    const [b] = await c2.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    expect(a.snippet).toBe(b.snippet);
+    expect(a.source_url).toBe(b.source_url);
     expect(a.captured_at).toBe(b.captured_at);
   });
 });

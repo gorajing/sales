@@ -168,10 +168,23 @@ export interface SignalConnector {
  * (HTTP 5xx, rate-limit hit, malformed response, transient network
  * error). The poll orchestrator catches this to apply backoff;
  * other thrown errors propagate as unexpected bugs.
+ *
+ * `cause` is forwarded to the native ES2022 `Error` constructor's
+ * `ErrorOptions.cause` so it participates in stack-trace chaining
+ * (e.g. `console.error(err)` and Node's `--diagnostic-trace`
+ * output walk it). The base `Error` class assigns it to `this.cause`
+ * as a non-enumerable property; the public field annotation here
+ * keeps the type visible to TypeScript without re-declaring it as
+ * an own property.
  */
 export class ConnectorError extends Error {
-  constructor(message: string, public readonly cause?: unknown) {
-    super(message);
+  declare readonly cause?: unknown;
+
+  constructor(message: string, cause?: unknown) {
+    // Only pass ErrorOptions when cause is defined — `{ cause: undefined }`
+    // would set `error.cause = undefined` enumerably on some runtimes,
+    // which is observably different from "no cause at all".
+    super(message, cause !== undefined ? { cause } : undefined);
     this.name = 'ConnectorError';
   }
 }

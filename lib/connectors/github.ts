@@ -50,22 +50,42 @@ export type WatchEntry = z.infer<typeof WatchEntrySchema>;
  * operator who typos `classification: enemy_of_the_state` doesn't get a
  * partial poll set with their typo silently dropped.
  *
- * Section grammar (per the file's own header):
- *   ## <heading>           ← any heading text; not used for matching
+ * File layout:
+ *   [optional preamble with operator-facing docs, using `##` freely]
+ *   ---
+ *   ## <repo-heading>
  *   - target: repo:<owner>/<name>
  *   - signals: [a, b, c]
  *   - classification: prospect|competitor|neutral
+ *   ...
  *
- * The order of the three required lines is fixed-per-line-matcher,
- * but they can appear in any order within the section. Comments are
- * implicit (any line that doesn't match a recognized field is
- * ignored, like in routing-rules.md).
+ * The horizontal-rule `---` on a line by itself separates the file's
+ * own documentation from the watch entries. Everything before the
+ * first `---` is ignored by the parser — that's where docs about
+ * field grammar, valid values, and trust framing live, addressed to
+ * operators editing this file. Sections after `---` are watch entries
+ * and validated strictly.
+ *
+ * If the separator is missing the whole file is treated as entries,
+ * which keeps a header-less watch file (just `## name` + fields)
+ * working. Operators who DO write docs are expected to keep the
+ * `---` in place; the parser doesn't enforce its presence.
  */
 export function parseWatchList(md: string): WatchEntry[] {
   const out: WatchEntry[] = [];
-  // Split on `^## ` headings. Drop the first chunk — it's the file's
-  // header text, not a section.
-  const sections = md.split(/^## /m).slice(1);
+  // Skip everything up to and INCLUDING the first horizontal-rule
+  // separator so the file's own documentation (which freely uses `##`
+  // for its own section headings) doesn't get parsed as watch entries.
+  // The pre-fix bug: my own data/github-watch.md had `## How matching
+  // works` etc., which the section-splitter treated as missing-field
+  // entries → file failed to parse → fromEnv() crashed at startup.
+  const sepMatch = md.match(/^---\s*$/m);
+  const entriesText = sepMatch
+    ? md.slice((sepMatch.index ?? 0) + sepMatch[0].length)
+    : md;
+  // Split on `^## ` headings within the entries section. Drop the first
+  // chunk — it's whitespace before the first heading.
+  const sections = entriesText.split(/^## /m).slice(1);
   const errors: string[] = [];
 
   for (const section of sections) {
@@ -167,14 +187,47 @@ export interface GitHubEventsClient {
 // `PER_PAGE` is the max GitHub allows; smaller pages just mean more
 // round-trips. `PAGE_CAP` bounds the worst case: a `since` set to the
 // epoch on a hot repo would otherwise drain forever, burning API budget
-// and orchestrator time. GitHub's Events API only retains ~90 days /
-// 300 events, so 10 pages × 100 = 1000 is well above what the API
-// would return — but the cap is the defense if that limit changes
-// upstream.
+// and orchestrator time. GitHub's Events API retains roughly 30 days /
+// 300 events per repo (3 pages at PER_PAGE=100), so PAGE_CAP=10 is
+// well above the documented limit — the cap is the defense if that
+// limit changes upstream.
 // --------------------------------------------------------------------------
 
 const PER_PAGE = 100;
 const PAGE_CAP = 10;
+
+// --------------------------------------------------------------------------
+// GitHub login regex.
+//
+// GitHub usernames are documented as alphanumeric + single hyphens,
+// 1-39 chars, no leading/trailing/consecutive hyphens. The connector
+// rejects events whose actor.login violates this — a login containing
+// `/`, whitespace, or other punctuation would otherwise leak into
+// `account_domain = github.com/${actor}` and produce a fake-looking
+// account row. The check defends against API-shape changes too:
+// a future field rename or impostor schema can't produce a malformed
+// `login` value that slips into our account namespace.
+// --------------------------------------------------------------------------
+
+const GITHUB_LOGIN_RE = /^[a-zA-Z\d](?:[a-zA-Z\d]|-(?=[a-zA-Z\d])){0,38}$/;
+
+// --------------------------------------------------------------------------
+// Snippet helper: cap to N characters without splitting a surrogate
+// pair. `.slice(0, N)` is in UTF-16 code units, so capping in the
+// middle of a multi-code-unit emoji (e.g. 👨‍💻) can leave a dangling
+// high surrogate which renders as `�`. The trim is cheap (one char
+// inspection at the boundary) and keeps snippets visually clean.
+// --------------------------------------------------------------------------
+
+function safeSlice(s: string, n: number): string {
+  if (s.length <= n) return s;
+  const code = s.charCodeAt(n - 1);
+  // High surrogate range. If the cap-1 char is a high surrogate, the
+  // cap would split the pair — back off by one so the surrogate is
+  // either kept whole (if pair-completed by char[n]) or fully dropped.
+  if (code >= 0xd800 && code <= 0xdbff) return s.slice(0, n - 1);
+  return s.slice(0, n);
+}
 
 // --------------------------------------------------------------------------
 // The connector.
@@ -247,10 +300,16 @@ export class GitHubConnector implements SignalConnector {
     // the SAME `GitHubEventsClient` shape the tests exercise — if a
     // future Octokit upgrade changes the wire types, this adapter
     // is the one place that has to know.
+    //
+    // Prefer the namespaced `octokit.rest.activity` alias over the
+    // top-level `octokit.activity`. Both work today; the namespaced
+    // form is the one Octokit guarantees across major versions, and
+    // confining the cast to a single line here keeps the
+    // version-coupling explicit.
     const client: GitHubEventsClient = {
       activity: {
         async listRepoEvents(params) {
-          const r = await octokit.activity.listRepoEvents(params);
+          const r = await octokit.rest.activity.listRepoEvents(params);
           // The wire shape from Octokit is structurally a superset
           // of `RepoEvent` (more fields per event, plus wrapper
           // metadata we don't use). The cast narrows from the
@@ -277,16 +336,29 @@ export class GitHubConnector implements SignalConnector {
 
   /**
    * Drain pages of `listRepoEvents` for one watch entry until we hit
-   * an event older than `since` or the page cap. Each page is fetched
-   * in series — parallel page fetches would race with rate limits and
-   * complicate watermark semantics.
+   * an empty page or the page cap. Each page is fetched in series —
+   * parallel page fetches would race with rate limits and complicate
+   * watermark semantics.
+   *
+   * # Why no early-stop on "first old event"
+   *
+   * An earlier version stopped the drain as soon as any event in a
+   * page was older than `since`. That assumed GitHub returns events
+   * strictly sorted newest-first across pages, but the Events API
+   * docs don't explicitly guarantee this — the worst case under
+   * slight cross-page disorder is that newer events on page N+1 are
+   * silently missed. The current design drains every page within
+   * the cap, filters individual events by their own timestamp, and
+   * relies on the `evidence.dedupe_key` UNIQUE index downstream to
+   * absorb the redundant fetches when overlapping windows occur.
+   * GitHub retains roughly 300 events per repo, so the worst-case
+   * total page count under PER_PAGE=100 is 3 — well within
+   * PAGE_CAP=10 — and a stale repo's empty-page response stops the
+   * loop on the first or second fetch.
    *
    * Stop conditions, in priority order:
    *   1. Page returned 0 events → no more to drain.
-   *   2. Any event in the page was older than `since` → that page is
-   *      the boundary, and every subsequent page is even older
-   *      (GitHub sorts newest-first), so stop.
-   *   3. PAGE_CAP reached → defensive bound; the operator's `since`
+   *   2. PAGE_CAP reached → defensive bound; the operator's `since`
    *      may be wrong, but we still return a useful slice.
    */
   private async fetchEntryEvents(entry: WatchEntry, since: Date): Promise<ConnectorPayload[]> {
@@ -320,34 +392,26 @@ export class GitHubConnector implements SignalConnector {
 
       if (raw.length === 0) break;
 
-      let sawOlder = false;
       for (const ev of raw) {
         // Skip events with no timestamp. Octokit's types say
         // `created_at` can be null (rare anonymous events). Without
-        // this guard, `new Date(null).getTime() === 0` would mark
-        // such an event as ancient and trigger the early-stop
-        // signal, causing the connector to miss legitimate events
-        // on later pages.
+        // this guard, downstream parsing would emit NaN as
+        // `captured_at` and ingestSignal would reject the row.
         if (!ev.created_at) continue;
         // GitHub's `created_at` is ISO-8601 with Z offset.
         // ingestSignal normalizes again at the write boundary, so
         // even if a future API quirk returned an unusual format, the
         // canonical normalization wins downstream.
         const ts = new Date(ev.created_at).getTime();
-        if (ts < sinceMs) {
-          sawOlder = true;
-          continue;
-        }
+        // Malformed timestamps (`new Date("not-a-date").getTime()`
+        // returns NaN) compare false against everything. Skip them
+        // explicitly so a bad event doesn't end up emitted with a
+        // captured_at that ingestSignal would later reject.
+        if (!Number.isFinite(ts)) continue;
+        if (ts < sinceMs) continue;
         const mapped = this.mapEvent(ev, entry);
         if (mapped) out.push(mapped);
       }
-
-      // After processing a page, if any event in it was older than
-      // `since`, every event in every later page is also older —
-      // stop. This handles the "mixed page" case (some kept, some
-      // dropped) correctly: we keep what's in the boundary page and
-      // don't fetch the next one.
-      if (sawOlder) break;
     }
 
     return out;
@@ -372,6 +436,16 @@ export class GitHubConnector implements SignalConnector {
     if (!ev.actor?.login) return null;
     if (!ev.created_at) return null;
     const actor = ev.actor.login;
+    // Reject logins that don't match GitHub's documented username
+    // format. The account_domain is built as `github.com/${actor}`,
+    // so a login containing `/` or whitespace would create a
+    // confusing or impostor-looking account row. Skipping here is
+    // the conservative call — the alternative (sanitizing) would
+    // mask a real upstream-shape-change. This bit of strictness is
+    // what the jsdoc means by "we don't trust GitHub actor identity
+    // for routing" — we don't crash on a malformed identity, we
+    // refuse to coin one.
+    if (!GITHUB_LOGIN_RE.test(actor)) return null;
     const capturedAt = ev.created_at;
 
     const base = {
@@ -424,7 +498,7 @@ export class GitHubConnector implements SignalConnector {
         // SignalPayload caps `snippet` already, but trimming here
         // makes the dedupe_key SHA stable to body edits beyond 1500
         // chars (an edit to char 1600 produces the same dedupe).
-        snippet: `${issue.title}\n\n${issue.body ?? ''}`.slice(0, 1500),
+        snippet: safeSlice(`${issue.title}\n\n${issue.body ?? ''}`, 1500),
         captured_at: capturedAt,
         metadata: { event_id: ev.id, classification: entry.classification },
       };
@@ -445,7 +519,7 @@ export class GitHubConnector implements SignalConnector {
         signal_type: 'trigger_event',
         fact: `${actor} merged PR in ${ev.repo.name}`,
         source_url: pr.html_url,
-        snippet: `${pr.title}\n\n${pr.body ?? ''}`.slice(0, 1500),
+        snippet: safeSlice(`${pr.title}\n\n${pr.body ?? ''}`, 1500),
         captured_at: capturedAt,
         metadata: { event_id: ev.id, classification: entry.classification },
       };
