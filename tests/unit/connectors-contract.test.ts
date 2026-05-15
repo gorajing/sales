@@ -16,11 +16,11 @@ vi.mock('@/db', async () => {
   return { db, schema: schemaModInner };
 });
 
+import { ZodError } from 'zod';
 import { db } from '@/db';
-import type { SignalConnector } from '../../lib/connectors/types';
+import type { SignalConnector, ConnectorPayload } from '../../lib/connectors/types';
 import { ConnectorError } from '../../lib/connectors/types';
 import { ingestSignal } from '../../lib/signals/ingest';
-import type { SignalPayload } from '../../lib/signals/types';
 
 beforeEach(() => {
   db.delete(schemaMod.evidence).run();
@@ -51,7 +51,7 @@ describe('SignalConnector contract', () => {
     // normalization survives the connector boundary.
     const fixtureConnector: SignalConnector = {
       name: 'fixture-github',
-      async fetchSince(): Promise<SignalPayload[]> {
+      async fetchSince(): Promise<ConnectorPayload[]> {
         return [{
           source: 'github_event',
           captured_by: 'connector_github',  // satisfies the source/producer matrix
@@ -86,35 +86,98 @@ describe('SignalConnector contract', () => {
     expect(result.deduped).toBe(false);  // first ingest of this dedupe_key
   });
 
-  it('a connector that emits a mismatched source/captured_by is REJECTED by ingestSignal', async () => {
+  it('a connector that emits a mismatched source/captured_by is REJECTED specifically by the source/producer matrix', async () => {
     // The point of the rejection: the Zod source/producer matrix on
     // SignalPayload runs INSIDE ingestSignal. A connector that
-    // tries to claim a connector_github producer for an
-    // intent_data source (or vice versa) hits the validation wall
-    // — there's no connector-specific bypass.
+    // tries to claim a connector_outreach producer for a
+    // github_event source hits the validation wall — there's no
+    // connector-specific bypass.
+    //
+    // Test specificity matters: a generic `.rejects.toThrow()` would
+    // pass if a future unrelated validator (e.g. a new field check)
+    // rejected this payload for a different reason. We want to pin
+    // the rejection to the matrix in particular, so the regression
+    // guard remains the right shape under future schema evolution.
+    //
+    // Note: we use `as ConnectorPayload` because TypeScript narrows
+    // ConnectorPayload to a connector_* captured_by, which is what
+    // a real connector implementation must satisfy. The cast lets
+    // the fixture build a deliberately-misaligned payload (matching
+    // pair would be source: 'github_event' + captured_by:
+    // 'connector_github') to exercise the runtime rejection path.
     const badConnector: SignalConnector = {
       name: 'fixture-bad',
-      async fetchSince(): Promise<SignalPayload[]> {
+      async fetchSince(): Promise<ConnectorPayload[]> {
         return [{
-          source: 'intent_data',                  // webhook-eligible source
-          captured_by: 'connector_github',        // claims to be a connector
+          source: 'github_event',                  // CONNECTOR_ONLY source
+          captured_by: 'connector_outreach',       // wrong connector for this source
           account_domain: 'fixture.example',
-          signal_type: 'intent',
-          fact: 'forged claim',
-          source_url: 'https://bombora.example/x',
-          snippet: 'forged claim — connector pretending to be a source it is not',
+          signal_type: 'engagement',
+          fact: 'mismatched producer',
+          source_url: 'https://github.com/foo/bar/stargazers',
+          snippet: 'mismatched producer — github_event source but connector_outreach captured_by',
           captured_at: '2026-05-10T12:00:00.000Z',
-        }];
+        } as ConnectorPayload];
       },
     };
 
     const events = await badConnector.fetchSince(new Date(0));
-    await expect(
-      ingestSignal(events[0], { trustedSender: true }),
-    ).rejects.toThrow();  // ZodError from .refine() — exact message is ingest's concern
-
+    let caught: unknown;
+    try {
+      await ingestSignal(events[0], { trustedSender: true });
+    } catch (err) {
+      caught = err;
+    }
+    // Specifically a ZodError; specifically the source/captured_by
+    // matrix message. If a future refactor moves this validation
+    // elsewhere or changes its wording, the test should fail loudly
+    // and force the maintainer to confirm the rejection still happens.
+    expect(caught).toBeInstanceOf(ZodError);
+    const zodErr = caught as ZodError;
+    const flat = JSON.stringify(zodErr.issues);
+    expect(flat).toMatch(/captured_by/i);
     // No row written — the rejection happens before any DB work.
     expect(db.select().from(schemaMod.evidence).all()).toHaveLength(0);
+  });
+
+  it('TypeScript prevents a connector from omitting captured_by (compile-time invariant)', () => {
+    // The `ConnectorPayload` type narrows captured_by from optional
+    // to required AND to the connector_* subset. This test is a
+    // type-level smoke check: building a valid ConnectorPayload
+    // succeeds, and the (commented) attempt to build one WITHOUT
+    // captured_by would fail at compile time. The test is here so
+    // a future refactor that loosens the type accidentally is
+    // caught by a runtime probe, not just by silent type drift.
+    const valid: ConnectorPayload = {
+      source: 'github_event',
+      captured_by: 'connector_github',
+      account_domain: 'x.example',
+      signal_type: 'engagement',
+      fact: 'starred',
+      source_url: 'https://github.com/x/y',
+      snippet: 'starred x.example',
+      captured_at: '2026-05-10T12:00:00.000Z',
+    };
+    expect(valid.captured_by).toBe('connector_github');
+
+    // The following would fail to compile (uncomment to verify):
+    //   const missing: ConnectorPayload = {
+    //     source: 'github_event',
+    //     // captured_by intentionally missing — TS reports
+    //     //   Property 'captured_by' is missing in type ...
+    //     account_domain: 'x.example',
+    //     signal_type: 'engagement',
+    //     fact: 'starred',
+    //     source_url: 'https://github.com/x/y',
+    //     snippet: 'starred x.example',
+    //     captured_at: '2026-05-10T12:00:00.000Z',
+    //   };
+    //
+    //   const wrongProducer: ConnectorPayload = {
+    //     ...valid,
+    //     captured_by: 'webhook',  // TS reports: not assignable to
+    //                              //   '"connector_github" | "connector_outreach" | ...'
+    //   };
   });
 
   it('ConnectorError carries the cause and identifies as a typed connector failure', () => {

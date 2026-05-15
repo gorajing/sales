@@ -10,7 +10,15 @@ This is the contract that lets us reason about the evidence spine: every row in 
 
 ## The trust model
 
-Connectors run in-process. They're configured at deploy time — fixture paths, API tokens, polling cadence — by the operator. That's why the orchestrator passes `{ trustedSender: true }` when calling `ingestSignal(...)` for connector output: the connector itself is trusted, just like a connector poll would be in a real CRM-integrated v1.5 deployment. But the *event* still has to satisfy the source/producer matrix. A connector that emits `source: 'intent_data'` with `captured_by: 'connector_github'` fails Zod validation inside `ingestSignal` — same code path as a misconfigured webhook. Connectors can't manufacture trust by claiming a source they don't have.
+Connectors run in-process. They're configured at deploy time — fixture paths, API tokens, polling cadence — by the operator. That's why the orchestrator passes `{ trustedSender: true }` when calling `ingestSignal(...)` for connector output: the connector itself is trusted, just like a connector poll would be in a real CRM-integrated v1.5 deployment.
+
+The trust boundary is layered, in increasing order of permissiveness:
+
+1. **TypeScript-level**: `ConnectorPayload` (in `lib/connectors/types.ts`) narrows `captured_by` to the `connector_*` subset of `CAPTURED_BY`. A connector that omits `captured_by` or sets it to `'webhook'` / `'manual'` doesn't compile. This blocks the most subtle trust-laundering path: emitting a non-connector-only source label (e.g. `intent_data`) with no producer label, where Zod's `.refine()` matrix wouldn't have caught it because the matrix only fires for `CONNECTOR_ONLY_SOURCES`.
+
+2. **Zod-level**: `SignalPayload`'s `.strict().refine(...)` enforces the source/producer matrix in `CONNECTOR_ONLY_SOURCES`. A connector that emits `source: 'github_event'` with `captured_by: 'connector_outreach'` (mismatched) fails Zod inside `ingestSignal` — same code path as a misconfigured webhook.
+
+3. **Runtime-level**: the `source` field must still be in `TRUSTED_SOURCES` for the row to land as `verified`. A connector emitting a `source` value NOT in `TRUSTED_SOURCES` persists evidence as `pending_audit` even with `trustedSender: true` — the source label isn't endorsed, regardless of who's calling.
 
 The matrix lives in `lib/signals/types.ts` (`CONNECTOR_ONLY_SOURCES`); update it when adding a new connector, and update the test suite at the same time so a future drop of the source label can't silently pass type-checking.
 
@@ -30,7 +38,7 @@ Each connector under `lib/connectors/<name>` should ship with a fixture-backed m
 
 ## Secrets
 
-API tokens and webhook signing keys live in environment variables (`GITHUB_TOKEN`, `OUTREACH_API_KEY`, etc.) and are documented in `.env.local.example`. Connectors must never log secret values or echo them to error messages. The poll orchestrator's logging layer is responsible for redacting secrets if a `ConnectorError` carries an upstream response body.
+API tokens and webhook signing keys live in environment variables (`GITHUB_TOKEN`, `OUTREACH_API_KEY`, etc.) and MUST be documented in `.env.local.example` when each connector is introduced. As of this writing (Task 3.1) no real connector env vars have been added; they land per-connector in Tasks 3.2+. Connectors must never log secret values or echo them to error messages. The poll orchestrator's logging layer is responsible for redacting secrets if a `ConnectorError` carries an upstream response body.
 
 ## Rate limits
 
@@ -38,11 +46,23 @@ Respecting upstream rate limits is the connector's responsibility, not the orche
 
 ## Adding a new connector
 
-1. Create `lib/connectors/<name>/index.ts` exporting a class or factory that implements `SignalConnector`.
-2. Add `<name>` to `CONNECTOR_ONLY_SOURCES` in `lib/signals/types.ts` (if it's a connector-only source) and to `TRUSTED_SOURCES`.
-3. Add a `<name>` value to the `CAPTURED_BY` enum in the same file.
-4. Add fixtures under `tests/fixtures/connectors/<name>/`.
-5. Add a unit test that drives `fetchSince(...)` against the fixtures, then pipes the output through `ingestSignal` and asserts the resulting rows.
-6. Document the env var(s) in `.env.local.example`.
+Three distinct labels are involved per connector — use the right one in each slot:
 
-The schema changes in steps 2 and 3 are deliberate friction — they force the maintainer to acknowledge "this is a new trust boundary" rather than slipping a new source label past the compiler.
+- **Connector name** (e.g. `github`): the directory and `SignalConnector.name` value. Lower-case, lab-internal.
+- **Signal source label** (e.g. `github_event`): the upstream-recognized source category, stored in `evidence.source_type`. Goes in `SIGNAL_SOURCE`.
+- **Producer label** (e.g. `connector_github`): the `captured_by` value identifying *this connector code* as the producer. Goes in `CAPTURED_BY`.
+
+The steps:
+
+1. Create `lib/connectors/<connector-name>/index.ts` exporting a class or factory that implements `SignalConnector`. Set `name` to `<connector-name>`.
+2. In `lib/signals/types.ts`:
+   - Add the new signal source label (e.g. `'github_event'`) to `SIGNAL_SOURCE`.
+   - Add it to `TRUSTED_SOURCES` if the connector's events should land as `verified` rather than `pending_audit`.
+   - Add the new producer label (e.g. `'connector_github'`) to `CAPTURED_BY`. The TypeScript `ConnectorCapturedBy` derivation in `lib/connectors/types.ts` will pick it up automatically — `Extract<CapturedBy, 'connector_${string}'>`.
+   - Add the source → producer mapping to `CONNECTOR_ONLY_SOURCES` if the source can ONLY be ingested by this connector (i.e. external callers shouldn't be able to claim it via the webhook).
+3. Drizzle schema regeneration: the `evidence.source_type` and `evidence.captured_by` columns are `text` with no enum constraint at the SQL level — no migration needed. The Zod schema is the source of truth.
+4. Add fixtures under `tests/fixtures/connectors/<connector-name>/`.
+5. Add a unit test that drives `fetchSince(...)` against the fixtures, then pipes the output through `ingestSignal` and asserts the resulting rows. The `tests/unit/connectors-contract.test.ts` pattern is the template.
+6. Document the env var(s) (API token, webhook secret, polling cadence) in `.env.local.example`.
+
+Steps 2 and 5 are deliberate friction — they force the maintainer to acknowledge "this is a new trust boundary" rather than slipping a new source label past the compiler.
