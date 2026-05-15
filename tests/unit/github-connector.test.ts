@@ -205,25 +205,65 @@ which should not match the entry marker regex.
     expect(list[0].target).toBe('repo:foo/bar');
   });
 
-  it('strips fenced code blocks so example syntax in docs is not parsed as a real entry', () => {
-    // Codex-flagged: a markdown example like the one inside the
-    // fence below would otherwise be parsed as a real watch entry.
-    // If the operator's example is a complete-looking entry, they'd
-    // silently get an extra repo polled; if it has placeholders
-    // (`repo:owner/name`), they'd get a Zod error at startup that
-    // they wouldn't know how to fix because the source is in their
-    // docs section.
-    //
-    // The parser strips ``` fences before section matching. This
-    // test pins both directions: the fenced example is NOT parsed
-    // as an entry, AND the real entry below it IS parsed.
-    const md = `
+  // Codex round 4 flagged that the round-3 fence-strip only handled
+  // column-0 backtick fences. CommonMark allows up to 3 leading
+  // spaces AND tilde fences (~~~). A buggy strip that handles only
+  // backticks would pass the "real example syntax in docs" check
+  // for backticks but silently install phantom watch entries from a
+  // tilde-fenced or indented-fenced example. Table-driven so each
+  // variant fails independently if its case regresses.
+  for (const { name, fence } of [
+    { name: 'column-0 triple backtick (` ``` `)', fence: '```' },
+    { name: 'indented (2-space) triple backtick', fence: '  ```' },
+    { name: 'longer (4) backticks for outer fence', fence: '````' },
+    { name: 'column-0 triple tilde (`~~~`)', fence: '~~~' },
+    { name: 'indented (3-space) triple tilde', fence: '   ~~~' },
+  ]) {
+    it(`strips fenced code blocks (${name}) so example syntax in docs is not parsed as a real entry`, () => {
+      // A typical operator example includes the entry's `##`
+      // heading too — proves the entry's structural elements
+      // (heading + bullets) are ALL inside the fence.
+      const example = [
+        fence + 'md',
+        '## owner/repo',
+        '- target: repo:owner/name',
+        '- signals: [stars]',
+        '- classification: prospect',
+        fence,  // closer (same marker run; CommonMark allows longer close, we test equal)
+      ].join('\n');
+      const md = `
 ## Example
 
 Here's what a watch entry looks like:
 
+${example}
+
+## real-entry
+- target: repo:foo/bar
+- signals: [stars]
+- classification: prospect
+`;
+      const list = parseWatchList(md);
+      expect(list).toHaveLength(1);
+      expect(list[0].target).toBe('repo:foo/bar');
+      // Defensive: explicitly assert the placeholder didn't slip
+      // through. A regression that strips backticks but not
+      // tildes would produce an extra `repo:owner/name` entry
+      // here.
+      expect(list.find((e) => e.target.includes('owner/name'))).toBeUndefined();
+    });
+  }
+
+  it('handles multiple separate fenced code blocks in one file', () => {
+    // Two fences in a row, both with example syntax — both must
+    // be stripped, and the real entry between/after them must
+    // still parse. A strip that toggles "in fence" on every ```
+    // line (the round-2/3 implementation) would handle this
+    // correctly only if open + close are paired. Tests pin that.
+    const md = `
+## Example A
 \`\`\`md
-- target: repo:owner/name
+- target: repo:alpha/example
 - signals: [stars]
 - classification: prospect
 \`\`\`
@@ -232,13 +272,17 @@ Here's what a watch entry looks like:
 - target: repo:foo/bar
 - signals: [stars]
 - classification: prospect
+
+## Example B
+\`\`\`md
+- target: repo:beta/example
+- signals: [issue_create]
+- classification: prospect
+\`\`\`
 `;
     const list = parseWatchList(md);
     expect(list).toHaveLength(1);
     expect(list[0].target).toBe('repo:foo/bar');
-    // Confirm the placeholder example was NOT parsed (else we'd
-    // have repo:owner/name in the list too).
-    expect(list.find((e) => e.target.includes('owner/name'))).toBeUndefined();
   });
 
   it('rejects a section with no signals line', () => {
@@ -737,10 +781,6 @@ describe('GitHubConnector.fetchSince — multiple watch entries', () => {
     ]);
   });
 });
-
-// --------------------------------------------------------------------------
-// Idempotency
-// --------------------------------------------------------------------------
 
 // --------------------------------------------------------------------------
 // Robustness against malformed events

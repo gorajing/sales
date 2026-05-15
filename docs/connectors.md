@@ -28,7 +28,7 @@ The matrix lives in `lib/signals/types.ts` (`CONNECTOR_ONLY_SOURCES`); update it
 
 ## Idempotency and watermarks
 
-Each `fetchSince(since)` call returns events from `(since, now]`. The orchestrator advances `since` after each successful drain. If two calls run with overlapping windows (a restart, a retry, two operators triggering a poll), the `evidence.dedupe_key` UNIQUE index catches duplicates — no double-count. Connectors should still track their own watermark to avoid burning upstream API budget on already-seen events; the design intent is "dedupe is the safety net, not the primary mechanism."
+Each `fetchSince(since)` call returns events from `[since, now]` — inclusive on the left. A boundary event (one whose `captured_at` equals `since`) is RE-EMITTED on the next poll if the orchestrator stores `since = max(captured_at)`; the `evidence.dedupe_key` UNIQUE index drops the duplicate. Inclusive boundary is the safer choice — strict-after-`since` would silently lose any event with the same timestamp as the boundary (rare upstream-side bursts at the same second) and would drop the boundary event itself if the orchestrator's watermark advance uses `max(captured_at)`. The pattern is "dedupe is the safety net for the boundary, not a license to over-poll" — connectors should still track their own watermark to avoid burning upstream API budget re-fetching old slices.
 
 For implementations that need persistent state beyond a single process invocation (last cursor token, last seen ID), Phase 3 will add either a dedicated `connector_state` table or per-connector columns; for v1 prototypes, holding the watermark in memory is acceptable when the process is long-lived.
 
@@ -42,7 +42,7 @@ Each connector under `lib/connectors/<name>` should ship with a fixture-backed m
 
 ## Secrets
 
-API tokens and webhook signing keys live in environment variables (`GITHUB_TOKEN`, `OUTREACH_API_KEY`, etc.) and MUST be documented in `.env.local.example` when each connector is introduced. As of this writing (Task 3.1) no real connector env vars have been added; they land per-connector in Tasks 3.2+. Connectors must never log secret values or echo them to error messages. The poll orchestrator's logging layer is responsible for redacting secrets if a `ConnectorError` carries an upstream response body.
+API tokens and webhook signing keys live in environment variables (`GITHUB_TOKEN`, `OUTREACH_API_KEY`, etc.) and MUST be documented in `.env.local.example` when each connector is introduced. As of Task 3.2 the only real connector env var is `GITHUB_TOKEN` (PAT with `public_repo` scope for the GitHub connector); future connectors add theirs per task. Connectors must never log secret values or echo them to error messages. The poll orchestrator's logging layer is responsible for redacting secrets if a `ConnectorError` carries an upstream response body.
 
 ## Rate limits
 

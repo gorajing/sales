@@ -87,24 +87,42 @@ export type WatchEntry = z.infer<typeof WatchEntrySchema>;
  */
 export function parseWatchList(md: string): WatchEntry[] {
   const out: WatchEntry[] = [];
-  // Strip fenced code blocks before any further processing. A
-  // ``` line opens a fence; the next ``` closes it. Lines inside
-  // (and the fence markers themselves) are dropped. This handles
-  // language-tagged fences (```ts, ```md) and untagged ones alike.
-  // A file that closes a fence without opening one (operator
-  // mistake) is treated as opening — the remainder of the file is
-  // dropped — which is loud-failure shaped: zero entries → operator
+  // Strip Markdown fenced code blocks before any further processing.
+  // Per CommonMark:
+  //   - Fence opener: 0–3 leading spaces, then 3+ backticks OR 3+
+  //     tildes (the marker), optional info string on the rest of
+  //     the line.
+  //   - Fence closer: same marker character, same-or-greater run
+  //     length, 0–3 leading spaces, nothing else on the line.
+  //   - Inside a fence, only the matching closer terminates it —
+  //     a longer or different-char fence sequence has no effect.
+  // We track the opening marker (char + length) so a nested
+  // ``` inside a ~~~ fence (or vice versa) doesn't accidentally
+  // close the outer one. An unclosed fence drops the rest of the
+  // file, which is loud-failure shaped: zero entries → operator
   // notices the watch list isn't polling anything. We prefer this
   // over silently parsing a half-fenced example as an entry.
   const lines = md.split('\n');
   const sanitizedLines: string[] = [];
-  let inFence = false;
+  let fenceMarker: string | null = null;  // null = outside, otherwise the run e.g. '```' or '~~~~'
   for (const line of lines) {
-    if (/^```/.test(line)) {
-      inFence = !inFence;
-      continue;
+    if (fenceMarker) {
+      // Inside fence — look for matching closer. Close must be
+      // same char, ≥ opener length, 0-3 leading spaces, no other
+      // content on the line.
+      const close = line.match(/^ {0,3}([`~]{3,})\s*$/);
+      if (close && close[1][0] === fenceMarker[0] && close[1].length >= fenceMarker.length) {
+        fenceMarker = null;
+      }
+      continue;  // drop every line inside the fence (and the closer)
     }
-    if (!inFence) sanitizedLines.push(line);
+    // Outside fence — is this line an opener?
+    const open = line.match(/^ {0,3}([`~]{3,})/);
+    if (open) {
+      fenceMarker = open[1];
+      continue;  // drop the opener line
+    }
+    sanitizedLines.push(line);
   }
   const sanitized = sanitizedLines.join('\n');
 
@@ -315,6 +333,17 @@ function safeSlice(s: string, n: number): string {
  * Overlapping polls (restart, retry, two operators triggering a
  * poll) hit the `evidence.dedupe_key` UNIQUE index and are dropped
  * without duplication.
+ *
+ * # All-or-nothing across watch entries
+ *
+ * `fetchSince` polls each entry serially and any ConnectorError
+ * aborts the whole call (subsequent entries are not polled). This
+ * matches the `SignalConnector` interface contract — see the
+ * "All-or-nothing across watch entries" section in
+ * `lib/connectors/types.ts`. The orchestrator (Task 3.4) is
+ * responsible for whole-connector backoff on error; if it needs
+ * to skip a single failed repo on the next poll it should remove
+ * that entry from the watch list, not partially retry.
  */
 export class GitHubConnector implements SignalConnector {
   readonly name = 'github';

@@ -103,16 +103,26 @@ export type ConnectorPayload = Omit<SignalPayload, 'captured_by'> & {
  *
  * # Idempotency
  *
- * Implementations should fetch the slice (`since`, now] and emit
- * all events captured in that window. Overlapping calls with
- * overlapping windows are SAFE — `evidence.dedupe_key` is the
- * cross-process safety net — but should be avoided to spare
- * upstream API budget. Each connector is expected to track its
- * own high-water mark (per-account, per-installation, etc.); the
- * poll orchestrator persists the watermark in a future
- * `connector_state` table or connector-specific columns (not yet
- * added; for v1 prototypes in-memory state in a long-lived
- * process is acceptable).
+ * Implementations should fetch the slice [`since`, now] — events
+ * whose timestamp is greater-than-or-equal to `since`. Equality is
+ * INCLUSIVE on the left: a connector that stores `since =
+ * max(captured_at)` between polls will see the boundary event
+ * again on the next poll, but the `evidence.dedupe_key` UNIQUE
+ * index drops the duplicate. Inclusive is the safer choice over
+ * strict `(since, now]` — a strict-after watermark advance can
+ * silently lose events that share a timestamp with the boundary
+ * (rare upstream-side burst at the exact second), and a strict
+ * filter loses the very event that defined the boundary if the
+ * orchestrator stores `since = max(captured_at)`.
+ *
+ * Overlapping calls with overlapping windows are SAFE —
+ * `evidence.dedupe_key` is the cross-process safety net — but
+ * should be avoided to spare upstream API budget. Each connector
+ * is expected to track its own high-water mark (per-account,
+ * per-installation, etc.); the poll orchestrator persists the
+ * watermark in a future `connector_state` table or
+ * connector-specific columns (not yet added; for v1 prototypes
+ * in-memory state in a long-lived process is acceptable).
  *
  * # Time
  *
@@ -135,11 +145,25 @@ export interface SignalConnector {
   readonly name: string;
 
   /**
-   * Pull signals captured strictly after `since` from the upstream
-   * source and return them as `ConnectorPayload`-shaped events. The
-   * orchestrator will pass each event through `ingestSignal(event,
-   * { trustedSender: true })` — implementations should NOT call
-   * ingestSignal directly.
+   * Pull signals captured at or after `since` from the upstream
+   * source and return them as `ConnectorPayload`-shaped events.
+   * Inclusive on the left (`[since, now]`) — see the Idempotency
+   * section above for the rationale. The orchestrator will pass
+   * each event through `ingestSignal(event, { trustedSender: true })`
+   * — implementations should NOT call ingestSignal directly.
+   *
+   * # All-or-nothing across watch entries
+   *
+   * Implementations that poll multiple entries per call (e.g. one
+   * `WatchEntry` per watched repo) MAY iterate them serially. A
+   * `ConnectorError` from any entry aborts the WHOLE `fetchSince`
+   * call — subsequent entries are not polled. This is by design:
+   * a 4xx on one entry usually means a configuration problem the
+   * orchestrator should learn about immediately, and a 5xx/429
+   * means upstream is unhealthy enough that polling more entries
+   * would burn API budget for no signal. The orchestrator (Task
+   * 3.4) is responsible for retry/backoff on the whole connector;
+   * it should NOT try to partially retry only the failed entry.
    *
    * The `ConnectorPayload` return type (vs. raw `SignalPayload`)
    * enforces at compile time that every emitted event names its
