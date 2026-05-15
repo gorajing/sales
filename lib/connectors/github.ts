@@ -90,37 +90,61 @@ export function parseWatchList(md: string): WatchEntry[] {
   // Strip Markdown fenced code blocks before any further processing.
   // Per CommonMark:
   //   - Fence opener: 0–3 leading spaces, then 3+ backticks OR 3+
-  //     tildes (the marker), optional info string on the rest of
-  //     the line.
-  //   - Fence closer: same marker character, same-or-greater run
-  //     length, 0–3 leading spaces, nothing else on the line.
-  //   - Inside a fence, only the matching closer terminates it —
-  //     a longer or different-char fence sequence has no effect.
-  // We track the opening marker (char + length) so a nested
-  // ``` inside a ~~~ fence (or vice versa) doesn't accidentally
-  // close the outer one. An unclosed fence drops the rest of the
-  // file, which is loud-failure shaped: zero entries → operator
-  // notices the watch list isn't polling anything. We prefer this
-  // over silently parsing a half-fenced example as an entry.
+  //     tildes (the marker, HOMOGENEOUS — no mixed chars), optional
+  //     info string on the rest of the line.
+  //   - Fence closer: same marker character, same-or-LONGER run
+  //     length, 0–3 leading spaces, nothing else on the line. A
+  //     shorter run or different-char sequence does NOT close.
+  // The opener regexes are character-specific (backtick-only or
+  // tilde-only) so a mixed marker like ```~~~ does NOT register as a
+  // 6-char backtick fence — it's actually a 3-backtick opener with
+  // `~~~` as its info string. Likewise a mixed line like ``~~~ does
+  // NOT close a backtick fence — only homogeneous ``` does.
+  // An unclosed fence drops the rest of the file, which is loud-
+  // failure shaped: zero entries → operator notices the watch list
+  // isn't polling anything. We prefer this over silently parsing a
+  // half-fenced example as an entry.
+  //
+  // Limitation: CommonMark allows list-item containers to add their
+  // own indentation, so a fence nested under a list could have more
+  // than 3 leading raw spaces. The connector only recognizes
+  // unindented (column-0) `- target:` lines as entry markers, so a
+  // list-nested fence wouldn't shift parsing anyway. Documenting
+  // here so the limitation is intentional rather than accidental.
   const lines = md.split('\n');
   const sanitizedLines: string[] = [];
-  let fenceMarker: string | null = null;  // null = outside, otherwise the run e.g. '```' or '~~~~'
+  // fenceMarker: null = outside; otherwise the homogeneous run
+  // (e.g. '```' or '~~~~'). We compare both first-char and length
+  // when matching close so the inversion of backtick/tilde
+  // (different opener vs. close attempt) is rejected.
+  let fenceMarker: string | null = null;
+  const OPEN_BACKTICK_RE = /^ {0,3}(`{3,})/;
+  const OPEN_TILDE_RE = /^ {0,3}(~{3,})/;
+  const CLOSE_BACKTICK_RE = /^ {0,3}(`{3,})\s*$/;
+  const CLOSE_TILDE_RE = /^ {0,3}(~{3,})\s*$/;
   for (const line of lines) {
     if (fenceMarker) {
-      // Inside fence — look for matching closer. Close must be
-      // same char, ≥ opener length, 0-3 leading spaces, no other
-      // content on the line.
-      const close = line.match(/^ {0,3}([`~]{3,})\s*$/);
-      if (close && close[1][0] === fenceMarker[0] && close[1].length >= fenceMarker.length) {
+      // Inside fence — look for the homogeneous closer matching
+      // the OPENER's char and length-or-greater.
+      const closeRe = fenceMarker[0] === '`' ? CLOSE_BACKTICK_RE : CLOSE_TILDE_RE;
+      const close = line.match(closeRe);
+      if (close && close[1].length >= fenceMarker.length) {
         fenceMarker = null;
       }
       continue;  // drop every line inside the fence (and the closer)
     }
-    // Outside fence — is this line an opener?
-    const open = line.match(/^ {0,3}([`~]{3,})/);
-    if (open) {
-      fenceMarker = open[1];
+    // Outside fence — is this line an opener? Try backtick first,
+    // then tilde. The regexes are mutually exclusive (each requires
+    // its own char), so order doesn't change which fires.
+    const openB = line.match(OPEN_BACKTICK_RE);
+    if (openB) {
+      fenceMarker = openB[1];
       continue;  // drop the opener line
+    }
+    const openT = line.match(OPEN_TILDE_RE);
+    if (openT) {
+      fenceMarker = openT[1];
+      continue;
     }
     sanitizedLines.push(line);
   }

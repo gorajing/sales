@@ -254,6 +254,39 @@ ${example}
     });
   }
 
+  it('does not treat a mixed marker (```~~~) as a fence — backtick and tilde runs must be homogeneous', () => {
+    // CommonMark fence markers are HOMOGENEOUS — either all
+    // backticks or all tildes, not mixed. A line like ```~~~ is a
+    // 3-backtick opener with `~~~` as its info string (which we
+    // strip along with the fence content), NOT a 6-char "anything"
+    // marker that a generic [`~]{3,} regex would capture. The
+    // closer must then be 3+ backticks on its own line — a tilde
+    // run would NOT close it.
+    //
+    // The previous round-4 implementation used [`~]{3,} which
+    // captured ```~~~ as a 6-char homogeneous-looking marker;
+    // then a normal ``` closer wouldn't satisfy "length ≥ 6" and
+    // the fence would stay open forever, dropping the rest of the
+    // file. The fix uses separate backtick-only and tilde-only
+    // regexes.
+    const md = `
+## Example
+\`\`\`~~~
+- target: repo:owner/example
+- signals: [stars]
+- classification: prospect
+\`\`\`
+
+## real-entry
+- target: repo:foo/bar
+- signals: [stars]
+- classification: prospect
+`;
+    const list = parseWatchList(md);
+    expect(list).toHaveLength(1);
+    expect(list[0].target).toBe('repo:foo/bar');
+  });
+
   it('handles multiple separate fenced code blocks in one file', () => {
     // Two fences in a row, both with example syntax — both must
     // be stripped, and the real entry between/after them must
@@ -469,7 +502,8 @@ describe('GitHubConnector.fetchSince — time filtering', () => {
   });
 
   it('keeps events at or after `since` (boundary: equality is INCLUSIVE)', async () => {
-    // The contract is "events captured after (since, now]". This test
+    // The contract is "events captured at-or-after `since` ([since, now])".
+    // See SignalConnector.fetchSince in lib/connectors/types.ts. This test
     // pins the exact boundary so a refactor that flips < to <= or
     // vice versa surfaces. We pick equality to be INCLUSIVE so the
     // first poll after a restart doesn't lose the boundary event.
@@ -666,12 +700,19 @@ describe('GitHubConnector.fetchSince — error wrapping', () => {
     expect(err.message).toMatch(/foo\/bar/);  // names the failing repo
   });
 
-  it('wraps a 404 into ConnectorError with status preserved (orchestrator can skip the repo)', async () => {
+  it('wraps a 404 into ConnectorError with status preserved (so the operator can find and remove the bad entry)', async () => {
     // A 404 on listRepoEvents means the repo was deleted/renamed/
-    // made-private. The orchestrator should skip THAT repo on the
-    // next poll, not crash the whole connector. The connector's job
-    // is just to surface the status faithfully — policy lives in
-    // the orchestrator. So this test pins "status flows through".
+    // made-private. Per the all-or-nothing contract on
+    // SignalConnector.fetchSince (lib/connectors/types.ts), the
+    // connector aborts the WHOLE poll on any entry's error — the
+    // orchestrator doesn't partially retry. The 404 surfaces in
+    // ConnectorError so the operator sees which repo broke in logs
+    // and can remove the bad entry from data/github-watch.md on
+    // the next deploy. The connector's job is just to surface the
+    // status faithfully — policy lives in the orchestrator. So
+    // this test pins "status flows through" for that policy
+    // (specifically: a 404 reaches `cause.status` for the
+    // orchestrator to log distinctively from 5xx/429).
     const upstream = Object.assign(new Error('Not Found'), { status: 404 });
     const client: GitHubEventsClient = {
       activity: { listRepoEvents: vi.fn().mockRejectedValue(upstream) },
