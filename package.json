@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@octokit/rest": "^22.0.1",
     "better-sqlite3": "^12.9.0",
     "drizzle-orm": "^0.45.2",
     "next": "^16.2.4",
