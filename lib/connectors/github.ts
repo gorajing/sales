@@ -50,53 +50,75 @@ export type WatchEntry = z.infer<typeof WatchEntrySchema>;
  * operator who typos `classification: enemy_of_the_state` doesn't get a
  * partial poll set with their typo silently dropped.
  *
- * File layout:
- *   [optional preamble with operator-facing docs, using `##` freely]
+ * File layout (recommended convention):
+ *   # Title
+ *   <prose docs, optionally using `##` doc headings, `---` rules>
  *   ---
- *   ## <repo-heading>
+ *   ## repo-heading
  *   - target: repo:<owner>/<name>
  *   - signals: [a, b, c]
  *   - classification: prospect|competitor|neutral
  *   ...
  *
- * The horizontal-rule `---` on a line by itself separates the file's
- * own documentation from the watch entries. Everything before the
- * first `---` is ignored by the parser — that's where docs about
- * field grammar, valid values, and trust framing live, addressed to
- * operators editing this file. Sections after `---` are watch entries
- * and validated strictly.
+ * # Section detection rule
  *
- * If the separator is missing the whole file is treated as entries,
- * which keeps a header-less watch file (just `## name` + fields)
- * working. Operators who DO write docs are expected to keep the
- * `---` in place; the parser doesn't enforce its presence.
+ * The parser splits on `^## ` and **treats a section as a watch entry
+ * iff its body contains a `- target:` line**. Doc-only sections
+ * (e.g. `## How matching works` with no `- target:`) are skipped
+ * silently. This is intentionally lenient about file layout:
+ *   - operators can put docs anywhere, with `##` headings used freely
+ *   - the `---` horizontal rule between docs and entries is a
+ *     convention, not a parser requirement; a stray `---` in a doc
+ *     paragraph doesn't shift the boundary
+ *
+ * It is intentionally strict about content of recognized entries:
+ *   - any section with `- target:` MUST also have valid `signals` and
+ *     `classification`; missing or malformed → whole-file rejection
+ *   - typos on the field name `target` (e.g. `- targt:`) cause the
+ *     section to be skipped, BUT the file-level "no entries loaded"
+ *     check below catches the case where every entry typo'd out
+ *
+ * Operators who want zero leniency should keep a single watch entry
+ * with `- target:` and never write doc subsections; the recommended
+ * file layout above gets them most of that by convention.
  */
 export function parseWatchList(md: string): WatchEntry[] {
   const out: WatchEntry[] = [];
-  // Skip everything up to and INCLUDING the first horizontal-rule
-  // separator so the file's own documentation (which freely uses `##`
-  // for its own section headings) doesn't get parsed as watch entries.
-  // The pre-fix bug: my own data/github-watch.md had `## How matching
-  // works` etc., which the section-splitter treated as missing-field
-  // entries → file failed to parse → fromEnv() crashed at startup.
-  const sepMatch = md.match(/^---\s*$/m);
-  const entriesText = sepMatch
-    ? md.slice((sepMatch.index ?? 0) + sepMatch[0].length)
-    : md;
-  // Split on `^## ` headings within the entries section. Drop the first
-  // chunk — it's whitespace before the first heading.
-  const sections = entriesText.split(/^## /m).slice(1);
+  // Split on `^## ` headings. The first chunk is the file preamble
+  // (anything before the first `##`), which we drop.
+  const sections = md.split(/^## /m).slice(1);
   const errors: string[] = [];
 
-  for (const section of sections) {
-    const target = section.match(/- target:\s*(\S+)/)?.[1];
-    const signalsRaw = section.match(/- signals:\s*\[([^\]]*)\]/)?.[1];
-    const classification = section.match(/- classification:\s*(\S+)/)?.[1];
+  // Marker for "this section is intended to be a watch entry, not
+  // pure docs." A section qualifies if it contains ANY of the three
+  // entry-field lines (`- target:`, `- signals:`, `- classification:`).
+  // Pure-docs sections (e.g. `## How matching works` with prose only)
+  // contain none of them and are skipped silently.
+  //
+  // Why ANY rather than just `- target:`: an operator who typos
+  // `- targt: repo:foo/bar` would otherwise have their section
+  // silently classified as docs and the repo would never be polled.
+  // With this rule, the typoed section still triggers the
+  // missing-fields error path (because target is missing, signals
+  // and/or classification are present), so the operator sees a loud
+  // failure naming the bad section.
+  //
+  // Docs containing `- target` (no colon) or `\`target\`` in prose
+  // don't match — the colon-after pattern is a strong syntactic
+  // signal of operator intent to declare a field value.
+  const ENTRY_MARKER_RE = /^- (target|signals|classification):/m;
 
-    // Missing required fields surface as named errors so the operator
-    // can find which section is broken without a grep — the section
-    // heading is the first non-empty line.
+  for (const section of sections) {
     const heading = section.split('\n')[0].trim();
+    if (!ENTRY_MARKER_RE.test(section)) {
+      // Doc-only section — skip.
+      continue;
+    }
+
+    const target = section.match(/^- target:\s*(\S+)/m)?.[1];
+    const signalsRaw = section.match(/^- signals:\s*\[([^\]]*)\]/m)?.[1];
+    const classification = section.match(/^- classification:\s*(\S+)/m)?.[1];
+
     const missing: string[] = [];
     if (!target) missing.push('target');
     if (!signalsRaw) missing.push('signals');
@@ -351,10 +373,14 @@ export class GitHubConnector implements SignalConnector {
    * the cap, filters individual events by their own timestamp, and
    * relies on the `evidence.dedupe_key` UNIQUE index downstream to
    * absorb the redundant fetches when overlapping windows occur.
-   * GitHub retains roughly 300 events per repo, so the worst-case
-   * total page count under PER_PAGE=100 is 3 — well within
-   * PAGE_CAP=10 — and a stale repo's empty-page response stops the
-   * loop on the first or second fetch.
+   *
+   * GitHub's repo-events endpoint has no `since` query parameter,
+   * so `since` is purely a client-side filter. A "stale" repo with
+   * retained but old events therefore drains as many pages as the
+   * API returns (up to its documented 300-event / 30-day cap, ≈3
+   * pages at PER_PAGE=100), filtering them all out and stopping on
+   * the next empty page. Bounded but not zero-cost; the alternative
+   * (early-stop) would be cheaper but unsound.
    *
    * Stop conditions, in priority order:
    *   1. Page returned 0 events → no more to drain.

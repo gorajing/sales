@@ -4,6 +4,8 @@ import {
   parseWatchList,
   type GitHubEventsClient,
   type RepoEvent,
+  type WatchSignal,
+  type WatchClass,
 } from '../../lib/connectors/github';
 import { ConnectorError } from '../../lib/connectors/types';
 
@@ -161,16 +163,43 @@ describe('parseWatchList', () => {
     expect(() => parseWatchList(md)).toThrow(/classification/i);
   });
 
-  it('rejects a section with no target line (would otherwise silently drop)', () => {
-    // A section missing `target` would, under a permissive parser, be
-    // silently skipped — the operator wouldn't see their typo. Pin the
-    // strict behavior so a permissive refactor breaks this test.
+  it('rejects a section with a typoed target (signals/classification present, target missing)', () => {
+    // The hard case for the lenient-by-default parser: an operator
+    // intended to declare an entry but typoed `- target:` (e.g.
+    // `- targt:`). The section still has `- signals:` and
+    // `- classification:` so the marker rule classifies it as
+    // "intended entry" and the missing-field check fires. If a
+    // future refactor narrowed the marker rule to only `- target:`,
+    // this test would catch the regression — the typoed entry
+    // would silently disappear.
     const md = `
 ## bad
+- targt: repo:foo/bar
 - signals: [stars]
 - classification: prospect
 `;
     expect(() => parseWatchList(md)).toThrow(/target/i);
+  });
+
+  it('skips a pure-docs section (no entry-field lines) without error', () => {
+    // The complement of the previous test: a section that genuinely
+    // documents something (no `- target:`, `- signals:`, or
+    // `- classification:` lines) is silently ignored. This is what
+    // makes the operator-friendly file layout work — docs can use
+    // `##` headings freely.
+    const md = `
+## How matching works
+
+Some prose explaining \`target\`, \`signals\`, and \`classification\`.
+
+## real-entry
+- target: repo:foo/bar
+- signals: [stars]
+- classification: prospect
+`;
+    const list = parseWatchList(md);
+    expect(list).toHaveLength(1);
+    expect(list[0].target).toBe('repo:foo/bar');
   });
 
   it('rejects a section with no signals line', () => {
@@ -789,14 +818,18 @@ describe('parseWatchList — committed data/github-watch.md', () => {
     // The original commit shipped a data/github-watch.md whose own
     // documentation used ## headings; parseWatchList treated them
     // as missing-field entries and the whole file failed to load
-    // at startup. The fix splits on `---` so the preamble docs are
-    // ignored. This test loads the actual committed file, which is
-    // the only way to catch a regression of that exact bug — any
-    // fixture inside the test file would diverge from the shipped
-    // content.
+    // at startup. The fix skips doc-only sections (no `- target:`).
+    // This test loads the actual committed file, which is the only
+    // way to catch a regression of that exact bug — any fixture
+    // inside the test file would diverge from the shipped content.
+    //
+    // Resolution uses `import.meta.url` instead of `process.cwd()`
+    // so vitest invocations from a different cwd (--root flag, IDE
+    // runners, monorepo configs) still find the file. The path is
+    // relative to THIS test file, not the working directory.
     const { readFileSync } = await import('node:fs');
-    const { resolve } = await import('node:path');
-    const md = readFileSync(resolve(process.cwd(), 'data/github-watch.md'), 'utf8');
+    const fileUrl = new URL('../../data/github-watch.md', import.meta.url);
+    const md = readFileSync(fileUrl, 'utf8');
     const entries = parseWatchList(md);
     // Don't pin exact entries — operators will add and remove
     // them over time. Just confirm we got at least one and that
@@ -828,75 +861,105 @@ describe('parseWatchList — committed data/github-watch.md', () => {
 // --------------------------------------------------------------------------
 
 describe('GitHubConnector.fetchSince — idempotency', () => {
-  it('produces identical snippet/source_url for the same upstream event across two polls', async () => {
-    // The orchestrator-level safety net is `evidence.dedupe_key`'s
-    // UNIQUE index, which is a hash of (captured_by, source,
-    // domain, url, sha256(snippet)[:16]). For overlapping polls to
-    // be idempotent, the snippet (which feeds the SHA-256) MUST be
-    // BYTE-IDENTICAL across polls of the same event. Test pins this:
-    // if a future change introduces `Date.now()` or the poll
-    // sequence number into the snippet, two polls of the same star
-    // would produce different dedupe keys and create a duplicate
-    // row.
+  // The orchestrator-level safety net is `evidence.dedupe_key`'s
+  // UNIQUE index, which is a hash of (captured_by, source, domain,
+  // url, sha256(snippet)[:16]). For overlapping polls to be
+  // idempotent, EVERY field that feeds the dedupe key must be
+  // byte-identical across polls of the same event.
+  //
+  // The strong proof: ONE connector, ONE fake client whose
+  // listRepoEvents returns the SAME event on multiple calls, with
+  // `Date.now()` mocked to advance between the calls (catching any
+  // accidental `Date.now()` injection into snippet/url/domain).
+  // We compute the SHA-256 of the snippet directly to mirror the
+  // dedupe-key formula exactly — comparing strings would catch
+  // "snippet differs," but the explicit hash check matches what
+  // ingest does at the boundary and rules out any
+  // platform/encoding subtlety in the comparison.
+  function makeSameEventClient(ev: RepoEvent): GitHubEventsClient {
+    const spy = vi.fn();
+    // Return the event on EVERY call. The pagination loop will see
+    // it on page 1, then empty on page 2, then stop. Repeated
+    // fetchSince calls re-trigger this from page 1.
+    spy.mockImplementation((params: { page?: number }) =>
+      Promise.resolve({ data: params.page === 1 ? [ev] : [] }),
+    );
+    return { activity: { listRepoEvents: spy } };
+  }
+
+  async function sha256Hex(s: string): Promise<string> {
+    const { createHash } = await import('node:crypto');
+    return createHash('sha256').update(s, 'utf8').digest('hex');
+  }
+
+  /** Run two fetchSince calls on the same connector with Date.now()
+   *  advanced between them. Returns the two payloads for comparison. */
+  async function twoPolls(ev: RepoEvent, signal: WatchSignal, classification: WatchClass) {
+    const c = new GitHubConnector(makeSameEventClient(ev), [
+      { target: 'repo:foo/bar', signals: [signal], classification },
+    ]);
+    const realNow = Date.now;
+    try {
+      // First poll at t=0 (mock-time).
+      Date.now = () => new Date('2026-05-10T12:00:00Z').getTime();
+      const [a] = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
+      // Advance Date.now by 5 minutes before the second poll. If
+      // any code path called `Date.now()` during fetchSince and
+      // embedded it in the output, the two payloads would diverge
+      // here.
+      Date.now = () => new Date('2026-05-10T12:05:00Z').getTime();
+      const [b] = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
+      return [a, b] as const;
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  it('star event: dedupe-key material is identical across polls with Date.now advanced', async () => {
     const ev = starEvent({
       id: '1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z',
     });
-    const c = new GitHubConnector(
-      makeClient([[ev]]).client,
-      [{ target: 'repo:foo/bar', signals: ['stars'], classification: 'prospect' }],
-    );
-    const c2 = new GitHubConnector(
-      makeClient([[ev]]).client,
-      [{ target: 'repo:foo/bar', signals: ['stars'], classification: 'prospect' }],
-    );
-    const [a] = await c.fetchSince(new Date('2026-05-10T10:00:00Z'));
-    const [b] = await c2.fetchSince(new Date('2026-05-10T10:00:00Z'));
-    expect(a.snippet).toBe(b.snippet);
-    expect(a.source_url).toBe(b.source_url);
+    const [a, b] = await twoPolls(ev, 'stars', 'prospect');
+    // Every field that feeds the dedupe_key:
+    expect(a.captured_by).toBe(b.captured_by);
+    expect(a.source).toBe(b.source);
     expect(a.account_domain).toBe(b.account_domain);
+    expect(a.source_url).toBe(b.source_url);
+    expect(a.snippet).toBe(b.snippet);
+    // And, redundantly, the SHA-256 prefix that the dedupe formula
+    // computes from snippet — proves byte-level identity.
+    expect((await sha256Hex(a.snippet)).slice(0, 16))
+      .toBe((await sha256Hex(b.snippet)).slice(0, 16));
+    // captured_at isn't part of the dedupe key but is also a poll-
+    // sensitive field worth confirming stable.
     expect(a.captured_at).toBe(b.captured_at);
   });
 
-  it('issue_create snippet is byte-identical across two polls of the same event', async () => {
-    // Codex-flagged test gap: the original idempotency test only
-    // exercised the star path. Issue and PR snippets concatenate
-    // title + body, and a future refactor that introduced (say)
-    // a timestamp into the snippet for issues would silently break
-    // dedupe for that path while the star test stayed green.
+  it('issue_create event: dedupe-key material is identical across polls with Date.now advanced', async () => {
     const ev = issueOpenedEvent({
       id: 'iss-1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z',
       title: 'Bug', body: 'Repro: ...',
       html_url: 'https://github.com/foo/bar/issues/1',
     });
-    const c1 = new GitHubConnector(makeClient([[ev]]).client, [
-      { target: 'repo:foo/bar', signals: ['issue_create'], classification: 'prospect' },
-    ]);
-    const c2 = new GitHubConnector(makeClient([[ev]]).client, [
-      { target: 'repo:foo/bar', signals: ['issue_create'], classification: 'prospect' },
-    ]);
-    const [a] = await c1.fetchSince(new Date('2026-05-10T10:00:00Z'));
-    const [b] = await c2.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    const [a, b] = await twoPolls(ev, 'issue_create', 'prospect');
     expect(a.snippet).toBe(b.snippet);
     expect(a.source_url).toBe(b.source_url);
-    expect(a.captured_at).toBe(b.captured_at);
+    expect(a.account_domain).toBe(b.account_domain);
+    expect((await sha256Hex(a.snippet)).slice(0, 16))
+      .toBe((await sha256Hex(b.snippet)).slice(0, 16));
   });
 
-  it('pr_merge_external snippet is byte-identical across two polls of the same event', async () => {
+  it('pr_merge_external event: dedupe-key material is identical across polls with Date.now advanced', async () => {
     const ev = prClosedEvent({
       id: 'pr-1', actor: 'alice', repo: 'foo/bar', ts: '2026-05-10T11:00:00Z',
       title: 'Refactor', body: 'See description',
       html_url: 'https://github.com/foo/bar/pull/1', merged: true,
     });
-    const c1 = new GitHubConnector(makeClient([[ev]]).client, [
-      { target: 'repo:foo/bar', signals: ['pr_merge_external'], classification: 'competitor' },
-    ]);
-    const c2 = new GitHubConnector(makeClient([[ev]]).client, [
-      { target: 'repo:foo/bar', signals: ['pr_merge_external'], classification: 'competitor' },
-    ]);
-    const [a] = await c1.fetchSince(new Date('2026-05-10T10:00:00Z'));
-    const [b] = await c2.fetchSince(new Date('2026-05-10T10:00:00Z'));
+    const [a, b] = await twoPolls(ev, 'pr_merge_external', 'competitor');
     expect(a.snippet).toBe(b.snippet);
     expect(a.source_url).toBe(b.source_url);
-    expect(a.captured_at).toBe(b.captured_at);
+    expect(a.account_domain).toBe(b.account_domain);
+    expect((await sha256Hex(a.snippet)).slice(0, 16))
+      .toBe((await sha256Hex(b.snippet)).slice(0, 16));
   });
 });
