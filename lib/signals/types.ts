@@ -112,6 +112,30 @@ const FUTURE_SKEW_MS = 10 * 60 * 1000; // 10 minutes of permitted clock skew
 const nonBlank = (msg: string) =>
   z.string().refine((s) => s.trim().length > 0, { message: msg });
 
+/**
+ * The accepted FORMAT for any captured/occurred timestamp: an
+ * ISO-8601 / RFC3339 string WITH an explicit offset (`Z` or
+ * `±HH:MM`). Date-only (`2026-05-12`), offset-less
+ * (`2026-05-12T00:00:00`), epoch numbers, and locale strings are
+ * rejected.
+ *
+ * Exported as the SINGLE SOURCE OF TRUTH for timestamp format so
+ * upstream producers (e.g. the connector fixture loader in
+ * `lib/connectors/fixture-loader.ts`) can validate against the
+ * EXACT rule `ingestSignal` enforces. Two hand-rolled copies that
+ * must agree is a drift bug: a producer that accepts a timestamp
+ * ingest later rejects either moves the failure downstream or
+ * silently loses the row during a since-filter. Anything that needs
+ * "is this a valid captured_at?" MUST import this, not re-derive it.
+ *
+ * Note this is FORMAT only. The future-skew policy is layered on
+ * `SignalPayload.captured_at` below — that's a value/time policy,
+ * not a format rule, and connector-side loaders deliberately do not
+ * replicate it (a far-future fixture is still caught loudly at
+ * ingest, not silently).
+ */
+export const ISO_DATETIME_WITH_OFFSET = z.string().datetime({ offset: true });
+
 // --------------------------------------------------------------------------
 
 /**
@@ -155,7 +179,7 @@ export const SignalPayload = z.object({
     }),
   snippet: nonBlank('snippet cannot be empty or whitespace-only')
     .max(MAX_SNIPPET_CHARS, `snippet exceeds ${MAX_SNIPPET_CHARS} chars`),
-  captured_at: z.string().datetime({ offset: true })
+  captured_at: ISO_DATETIME_WITH_OFFSET
     .refine((iso) => {
       const t = new Date(iso).getTime();
       return t <= Date.now() + FUTURE_SKEW_MS;

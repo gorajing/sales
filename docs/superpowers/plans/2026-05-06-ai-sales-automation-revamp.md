@@ -3888,13 +3888,18 @@ FORCES a decision rather than letting a default ride silently into production.
   so it must be driven by 3.4's retry/backoff design, not guessed now.
   **Decide at checkpoint:** keep all-or-nothing, or change the contract.
 
-- **[TASK 3.3 KICKOFF] Shared `classification → signal_type` mapping.**
-  `GitHubConnector.mapEvent` maps `classification === 'competitor'` →
-  `trigger_event`, else `engagement`. Defensible (operator-declared label,
-  also passed through `metadata`), but 3.3 adds three more connectors. To
-  prevent four drifting copies, extract a shared
-  `classificationToSignalType()` helper when 3.3 starts — do NOT duplicate
-  the inline ternary per connector.
+- **[TASK 3.3 — RESOLVED 2026-05-17] Shared connector logic / drift.**
+  Original prediction: extract a shared `classificationToSignalType()`
+  because `GitHubConnector` maps `classification==='competitor'` →
+  `trigger_event`. **The prediction was mis-aimed.** The 3.3 stubs have
+  no `classification` concept (no watch file) — they map source →
+  signal_type directly, so a `classificationToSignalType` helper would
+  have had zero callers. The *actual* drift risk was the near-identical
+  load-JSON / since-filter / map plumbing across the three stubs.
+  Resolved by extracting `lib/connectors/fixture-loader.ts`
+  (`loadFixtureSince`), so per-connector code is just the mapper. Lesson
+  recorded: predicted-seam ≠ actual-seam; the shared abstraction emerged
+  from the three concrete implementations, not the forecast.
 
 - **[TASK 3.4 DEFERRAL] Drain-until-empty polling cost.** The GitHub
   connector re-fetches ~3 pages of stale events per cold repo per poll

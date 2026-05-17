@@ -38,7 +38,20 @@ For implementations that need persistent state beyond a single process invocatio
 
 ## Fixtures vs. real APIs
 
-Each connector under `lib/connectors/<name>` should ship with a fixture-backed mode for tests and demos — typically a `<name>-fixtures.json` file under `tests/fixtures/connectors/`. The interface is identical (`fetchSince(since)`); only the data source differs. This is important for the test suite: real-API tests would require live credentials, hit rate limits, and produce flaky CI. The fixture-mode connector exercises the same code path, validates against the same `SignalPayload` schema, and runs in milliseconds. Real-API connectors should be exercised via a separate integration suite gated behind an explicit `RUN_REAL_CONNECTORS=1` env var.
+Each connector under `lib/connectors/<name>` should ship with a fixture-backed mode for tests and demos — a `<file>.json` under `tests/fixtures/connectors/<name>/`. The interface is identical (`fetchSince(since)`); only the data source differs. This is important for the test suite: real-API tests would require live credentials, hit rate limits, and produce flaky CI. The fixture-mode connector exercises the same code path, validates against the same `SignalPayload` schema, and runs in milliseconds. Real-API connectors should be exercised via a separate integration suite gated behind an explicit `RUN_REAL_CONNECTORS=1` env var.
+
+### Two malformed-data philosophies — pick the right one
+
+As of Task 3.3 there are two connector shapes, and they deliberately handle bad input differently. A new connector author must pick consciously:
+
+- **Real upstream (uncontrolled), e.g. `GitHubConnector`.** A single weird event (null actor, null/garbage timestamp) is *expected noise* from a third party. **Skip the bad event and continue** — one malformed event must not poison the batch. Genuine transport failures (5xx, 429, network) throw `ConnectorError` so the orchestrator backs off and retries.
+- **Fixture-backed stub (controlled), e.g. Salesforce/HubSpot/Outreach via `loadFixtureSince`.** The data is *our committed repo content*. A malformed row is a *defect*, not noise. **Throw a plain `Error` (NOT `ConnectorError`)** — fail loud. `ConnectorError` signals "transient, retry with backoff"; retrying cannot fix a rotted fixture, so signalling transient would lie to the orchestrator and make it spin. This mirrors `parseWatchList`'s fail-the-whole-file stance for operator-edited config.
+
+The rule of thumb: **uncontrolled input degrades gracefully; controlled input fails loudly.** `ConnectorError` is reserved exclusively for *transient upstream* conditions the orchestrator can sensibly retry.
+
+### `loadFixtureSince` is not a production template
+
+The shared `lib/connectors/fixture-loader.ts` helper exists for the v1 *stub* connectors only. It validates each row's timestamp against `ISO_DATETIME_WITH_OFFSET` — the single exported source of truth for timestamp format (`lib/signals/types.ts`), the exact rule `ingestSignal` enforces on `captured_at`. Reusing that shared schema (rather than a hand-rolled `new Date()` check) is the load-bearing decision: any gap between what a producer accepts and what ingest accepts is a silent-loss or move-the-failure bug. A future real-API Salesforce/HubSpot/Outreach connector should **not** treat `loadFixtureSince` as its template — it needs its own API client + pagination + `ConnectorError` seam (the `GitHubConnector` shape), while still validating timestamps against the same `ISO_DATETIME_WITH_OFFSET` schema.
 
 ## Secrets
 

@@ -118,8 +118,48 @@ describe('loadFixtureSince', () => {
     }
     expect(caught).toBeInstanceOf(Error);
     expect(caught).not.toBeInstanceOf(ConnectorError);
-    expect((caught as Error).message).toMatch(/non-string or blank/i);
+    expect((caught as Error).message).toMatch(/invalid timestamp/i);
+    expect((caught as Error).message).toMatch(/ISO-8601 with offset/i);
     expect((caught as Error).message).toMatch(/helper-test/);
+  });
+
+  it('rejects Date-parseable-but-Zod-invalid timestamps (date-only / no offset) — codex r2 gap', () => {
+    // THE round-2 regression: `new Date("2026-05-12")` and
+    // `new Date("2026-05-12T00:00:00")` are FINITE, so the round-1
+    // guard let them through — but ingestSignal's
+    // z.string().datetime({offset:true}) rejects them. That left a
+    // "Date-parseable but contract-invalid" silent-loss / move-the-
+    // failure gap. The loader now validates against the SAME shared
+    // schema (ISO_DATETIME_WITH_OFFSET), so a date-only fixture
+    // timestamp fails LOUD at load with a clear message instead of
+    // being silently filtered or rejected later at ingest.
+    expect(() =>
+      loadFixtureSince<{ ts: unknown }>(
+        fixture('_fixture-helper/dateonly-ts.json'),
+        (r) => r.ts,
+        new Date('2026-01-01T00:00:00.000Z'),
+        'helper-test',
+      ),
+    ).toThrow(/invalid timestamp.*ISO-8601 with offset/is);
+  });
+
+  it('preserves the underlying error as `cause` when a row getter throws', () => {
+    // codex r2 B: the wrapped getter error keeps the original via
+    // `{ cause }` so a future connector with a more complex
+    // accessor can still see the real failure, not just our
+    // contextual message.
+    let caught: unknown;
+    try {
+      loadFixtureSince<{ ts: unknown }>(
+        fixture('_fixture-helper/null-row.json'),
+        (r) => r.ts,
+        new Date(0),
+        'helper-test',
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as Error).cause).toBeInstanceOf(TypeError);
   });
 
   it('wraps a malformed (null) row with context instead of a raw TypeError', () => {

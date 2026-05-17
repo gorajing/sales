@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { ISO_DATETIME_WITH_OFFSET } from '../signals/types';
 
 /**
  * Shared fixture loader for the fixture-backed stub connectors
@@ -41,11 +42,14 @@ import { readFileSync } from 'node:fs';
  * @param getTimestamp pulls the timestamp off a row. Returns
  *   `unknown` deliberately: the row is untrusted fixture data, so
  *   the TS type can't promise the field is a string. The loader
- *   validates it's a non-blank string before `new Date(...)` —
- *   without that, `new Date(null)` → epoch `0` and
- *   `new Date(<number>)` → a finite ms value both slip the
- *   `Number.isFinite` guard and get SILENTLY filtered as "older
- *   than since" instead of failing loud (codex 3.3 round 1).
+ *   validates the value against `ISO_DATETIME_WITH_OFFSET` — the
+ *   exact format rule `ingestSignal` enforces on `captured_at` —
+ *   so the loader accepts precisely what ingest accepts. Earlier
+ *   ad-hoc guards (`typeof !== 'string'`, then `Number.isFinite`)
+ *   each closed only part of the silent-loss class: `new Date(null)`
+ *   → epoch 0, `new Date(<number>)` → finite ms, and
+ *   `new Date("2026-05-12")` → finite-but-Zod-invalid all slipped
+ *   through (codex 3.3 rounds 1 & 2).
  * @param since inclusive lower bound — rows with timestamp >= since
  *   are kept (matches the inclusive `[since, now]` boundary the
  *   GitHub connector and `docs/connectors.md` settled on; the
@@ -100,35 +104,33 @@ export function loadFixtureSince<T>(
       throw new Error(
         `${context} fixture row ${i} is malformed (cannot read its ` +
         `timestamp field): ${(err as Error).message} (${fixturePath})`,
+        { cause: err },
       );
     }
 
-    // Require a non-blank STRING before `new Date(...)`. This is the
-    // load-bearing guard: `new Date(null)` is epoch `0` and
-    // `new Date(<number>)` is a finite ms value — both are
-    // `Number.isFinite`, so a number/null/missing timestamp would
-    // otherwise pass the finiteness check and be silently filtered
-    // out by `>= sinceMs` (it's "before 1970"). For controlled
-    // fixture data that silent loss is a defect; throw instead.
-    if (typeof tsRaw !== 'string' || tsRaw.trim() === '') {
+    // Validate against the EXACT format rule ingestSignal enforces
+    // on `captured_at` (`ISO_DATETIME_WITH_OFFSET`, the single
+    // source of truth in lib/signals/types.ts). An earlier version
+    // used `new Date(x); Number.isFinite` — but `new Date("2026-05-12")`
+    // and `new Date("2026-05-12T00:00:00")` are FINITE yet Zod
+    // rejects them (no time / no offset). That left a "Date-parseable
+    // but contract-invalid" gap: such a row was either silently
+    // filtered out by `>= since` or emitted only to be rejected at
+    // ingest (move-the-failure). Validating with the shared schema
+    // closes the gap — the loader accepts exactly what ingest
+    // accepts, no more, no less. Whitespace-padded strings are
+    // rejected (not trimmed) because Zod rejects them too.
+    const parsed = ISO_DATETIME_WITH_OFFSET.safeParse(tsRaw);
+    if (!parsed.success) {
       throw new Error(
-        `${context} fixture row ${i} has a non-string or blank ` +
-        `timestamp ${JSON.stringify(tsRaw)} — expected an ISO-8601 ` +
-        `string (${fixturePath})`,
+        `${context} fixture row ${i} has an invalid timestamp ` +
+        `${JSON.stringify(tsRaw)} — must be ISO-8601 with offset ` +
+        `(e.g. 2026-05-12T00:00:00.000Z), the same rule ingestSignal ` +
+        `enforces on captured_at (${fixturePath})`,
       );
     }
 
-    const ts = new Date(tsRaw).getTime();
-    // Catches malformed strings (`new Date('not-a-date')` → NaN).
-    // ISO-format/offset validity beyond "parses to a finite instant"
-    // is ingestSignal's Zod `.datetime({offset:true})` job, not the
-    // loader's — the loader only needs a usable instant to filter on.
-    if (!Number.isFinite(ts)) {
-      throw new Error(
-        `${context} fixture row ${i} has an unparseable timestamp ` +
-        `${JSON.stringify(tsRaw)} (${fixturePath})`,
-      );
-    }
+    const ts = new Date(parsed.data).getTime();
     if (ts >= sinceMs) kept.push(rows[i]);
   }
 
