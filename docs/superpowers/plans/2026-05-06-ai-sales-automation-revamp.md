@@ -3864,6 +3864,46 @@ git commit -m "feat(alerts): /alerts page with Acknowledge server action; GET /a
 
 ## Phase 3 — Connectors
 
+### Open decisions — Phase 3 checkpoint (captured 2026-05-17, post Task 3.2 review)
+
+These surfaced during the Task 3.2 self-review. None block 3.2 (codex-converged,
+pushed). They are recorded here so the Phase 3 manual checkpoint (after 3.3+3.4)
+FORCES a decision rather than letting a default ride silently into production.
+
+- **[CHECKPOINT] Connector account identity.** `GitHubConnector` emits
+  `account_domain = github.com/<actor.login>` (`lib/connectors/github.ts`).
+  That string is not a real domain, so GitHub-sourced evidence lives in its
+  own account namespace, disconnected from domain-matched CRM accounts. v1
+  ships siloed; a GitHub-actor→company resolver is deferred to v1.5. **Decide
+  at checkpoint:** accept siloed for the demo, or add a resolution seam.
+  This propagates to every connector (3.3 stubs face the same question), so
+  the principle must be set with the full 3.3+3.4 picture in view.
+
+- **[CHECKPOINT] All-or-nothing across watch entries.** `fetchSince` aborts
+  the whole call on any single entry's `ConnectorError` (subsequent entries
+  not polled) — see the contract note in `lib/connectors/types.ts`. Simple
+  and documented, but one stale repo silently starves the connector as the
+  watch list grows. The fix (skip-and-continue + per-entry error channel)
+  changes the `SignalConnector` contract and ripples into the orchestrator,
+  so it must be driven by 3.4's retry/backoff design, not guessed now.
+  **Decide at checkpoint:** keep all-or-nothing, or change the contract.
+
+- **[TASK 3.3 KICKOFF] Shared `classification → signal_type` mapping.**
+  `GitHubConnector.mapEvent` maps `classification === 'competitor'` →
+  `trigger_event`, else `engagement`. Defensible (operator-declared label,
+  also passed through `metadata`), but 3.3 adds three more connectors. To
+  prevent four drifting copies, extract a shared
+  `classificationToSignalType()` helper when 3.3 starts — do NOT duplicate
+  the inline ternary per connector.
+
+- **[TASK 3.4 DEFERRAL] Drain-until-empty polling cost.** The GitHub
+  connector re-fetches ~3 pages of stale events per cold repo per poll
+  (early-stop removed for cross-page-order correctness — see jsdoc in
+  `lib/connectors/github.ts`). Pure efficiency, not correctness. The proper
+  fix is watermark/ETag persistence, which the plan already assigns to the
+  orchestrator (`connector_state`, deferred). Revisit only if 3.4 adds
+  watermark persistence.
+
 ### Task 3.1: Connector interface
 
 **Files:**
