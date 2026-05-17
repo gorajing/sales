@@ -123,19 +123,32 @@ describe('loadFixtureSince', () => {
     expect((caught as Error).message).toMatch(/helper-test/);
   });
 
-  it('rejects Date-parseable-but-Zod-invalid timestamps (date-only / no offset) — codex r2 gap', () => {
-    // THE round-2 regression: `new Date("2026-05-12")` and
-    // `new Date("2026-05-12T00:00:00")` are FINITE, so the round-1
-    // guard let them through — but ingestSignal's
-    // z.string().datetime({offset:true}) rejects them. That left a
-    // "Date-parseable but contract-invalid" silent-loss / move-the-
-    // failure gap. The loader now validates against the SAME shared
-    // schema (ISO_DATETIME_WITH_OFFSET), so a date-only fixture
-    // timestamp fails LOUD at load with a clear message instead of
-    // being silently filtered or rejected later at ingest.
+  // THE round-2 regression class: `new Date("2026-05-12")` and
+  // `new Date("2026-05-12T00:00:00")` are both FINITE, so the round-1
+  // guard let them through — but ingestSignal's
+  // z.string().datetime({offset:true}) rejects them. That left a
+  // "Date-parseable but contract-invalid" silent-loss / move-the-
+  // failure gap. The loader now validates against the SAME shared
+  // schema (ISO_DATETIME_WITH_OFFSET) and throws LOUD at load.
+  //
+  // Split into two single-bad-row fixtures (codex r3 D): the loader
+  // throws on the FIRST bad row, so a combined fixture would never
+  // execute the second case — the test title would over-promise.
+  it('rejects a date-only timestamp ("2026-05-12") — finite but Zod-invalid', () => {
     expect(() =>
       loadFixtureSince<{ ts: unknown }>(
         fixture('_fixture-helper/dateonly-ts.json'),
+        (r) => r.ts,
+        new Date('2026-01-01T00:00:00.000Z'),
+        'helper-test',
+      ),
+    ).toThrow(/invalid timestamp.*ISO-8601 with offset/is);
+  });
+
+  it('rejects an offset-less datetime ("2026-05-12T00:00:00") — finite but Zod-invalid', () => {
+    expect(() =>
+      loadFixtureSince<{ ts: unknown }>(
+        fixture('_fixture-helper/no-offset-ts.json'),
         (r) => r.ts,
         new Date('2026-01-01T00:00:00.000Z'),
         'helper-test',
