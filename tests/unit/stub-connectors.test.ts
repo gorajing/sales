@@ -97,6 +97,54 @@ describe('loadFixtureSince', () => {
     expect((caught as Error).message).toMatch(/not-a-date/);
   });
 
+  it('throws on a non-string timestamp (number/null slip the finite guard → silent loss)', () => {
+    // codex 3.3 r1 blocker: `new Date(1715299200000)` is a finite
+    // ms value and `new Date(null)` is epoch 0 — both pass
+    // Number.isFinite, so without the explicit string requirement a
+    // numeric/null timestamp would be SILENTLY filtered out as
+    // "before 1970" instead of failing loud. nonstring-ts.json's
+    // first row has a numeric ts; the loader must throw before it
+    // reaches the finite check.
+    let caught: unknown;
+    try {
+      loadFixtureSince<{ ts: unknown }>(
+        fixture('_fixture-helper/nonstring-ts.json'),
+        (r) => r.ts,
+        new Date('2026-01-01T00:00:00.000Z'),
+        'helper-test',
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(ConnectorError);
+    expect((caught as Error).message).toMatch(/non-string or blank/i);
+    expect((caught as Error).message).toMatch(/helper-test/);
+  });
+
+  it('wraps a malformed (null) row with context instead of a raw TypeError', () => {
+    // null-row.json is `[null]`. The getter `(r) => r.ts` throws
+    // "Cannot read properties of null" — a raw TypeError with no
+    // connector/path/index. The loader must catch and re-throw with
+    // context so the operator can find the bad row.
+    let caught: unknown;
+    try {
+      loadFixtureSince<{ ts: unknown }>(
+        fixture('_fixture-helper/null-row.json'),
+        (r) => r.ts,
+        new Date(0),
+        'helper-test',
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(ConnectorError);
+    expect((caught as Error).message).toMatch(/helper-test/);
+    expect((caught as Error).message).toMatch(/row 0/);
+    expect((caught as Error).message).toMatch(/malformed/i);
+  });
+
   it('throws when the fixture JSON is not an array', () => {
     expect(() =>
       loadFixtureSince(
@@ -202,45 +250,88 @@ describe('stub connector contract — output lands as verified evidence', () => 
     db.delete(schemaMod.accounts).run();
   });
 
-  it('Salesforce (crm_record + connector_salesforce) → verified evidence', async () => {
+  it('Salesforce: EVERY returned payload lands as verified crm_record evidence', async () => {
+    // codex 3.3 r1: ingest ALL payloads, not just the first — a bad
+    // second fixture row would otherwise slip through unverified.
     const c = new SalesforceConnector(fixture('salesforce/contacts.json'));
-    const [first] = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
-    const result = await ingestSignal(first, { trustedSender: true });
-    const row = db.select().from(schemaMod.evidence).all()[0];
-    expect(row.extractionStatus).toBe('verified');
-    expect(row.sourceType).toBe('crm_record');
-    expect(row.capturedBy).toBe('connector_salesforce');
-    expect(row.dedupeKey).toBeTruthy();
-    expect(result.deduped).toBe(false);
+    const payloads = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
+    expect(payloads.length).toBeGreaterThanOrEqual(2);
+    for (const p of payloads) {
+      const result = await ingestSignal(p, { trustedSender: true });
+      expect(result.deduped).toBe(false);
+    }
+    const rows = db.select().from(schemaMod.evidence).all();
+    expect(rows).toHaveLength(payloads.length);
+    expect(rows.every((r) => r.extractionStatus === 'verified')).toBe(true);
+    expect(rows.every((r) => r.sourceType === 'crm_record')).toBe(true);
+    expect(rows.every((r) => r.capturedBy === 'connector_salesforce')).toBe(true);
+    expect(rows.every((r) => r.dedupeKey)).toBeTruthy();
   });
 
-  it('HubSpot (crm_record + connector_hubspot) → verified evidence (proves the OTHER crm_record producer passes the matrix)', async () => {
+  it('HubSpot: every payload verified AND the contactless crm_record path creates NO contact row', async () => {
+    // Proves (a) the OTHER crm_record producer (connector_hubspot)
+    // passes the source/producer matrix, and (b) a HubSpot company
+    // (no contact_email) does NOT spawn a phantom contact —
+    // evidence.contactId stays null. codex 3.3 r1 asked to pin this.
     const c = new HubSpotConnector(fixture('hubspot/accounts.json'));
-    const [first] = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
-    const result = await ingestSignal(first, { trustedSender: true });
-    const row = db.select().from(schemaMod.evidence).all()[0];
-    expect(row.extractionStatus).toBe('verified');
-    expect(row.sourceType).toBe('crm_record');
-    expect(row.capturedBy).toBe('connector_hubspot');
-    expect(result.deduped).toBe(false);
+    const payloads = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
+    expect(payloads.length).toBeGreaterThanOrEqual(2);
+    for (const p of payloads) {
+      const result = await ingestSignal(p, { trustedSender: true });
+      expect(result.deduped).toBe(false);
+    }
+    const rows = db.select().from(schemaMod.evidence).all();
+    expect(rows).toHaveLength(payloads.length);
+    expect(rows.every((r) => r.extractionStatus === 'verified')).toBe(true);
+    expect(rows.every((r) => r.capturedBy === 'connector_hubspot')).toBe(true);
+    // The contactless invariant: no contacts created, every evidence
+    // row's contactId is null.
+    expect(rows.every((r) => r.contactId === null)).toBe(true);
+    expect(db.select().from(schemaMod.contacts).all()).toHaveLength(0);
   });
 
-  it('Outreach (engagement_event + connector_outreach) → verified evidence', async () => {
+  it('Outreach: every payload lands as verified engagement_event evidence', async () => {
     const c = new OutreachConnector(fixture('outreach/engagement.json'));
-    const [first] = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
-    const result = await ingestSignal(first, { trustedSender: true });
-    const row = db.select().from(schemaMod.evidence).all()[0];
-    expect(row.extractionStatus).toBe('verified');
-    expect(row.sourceType).toBe('engagement_event');
-    expect(row.capturedBy).toBe('connector_outreach');
-    expect(result.deduped).toBe(false);
+    const payloads = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
+    expect(payloads.length).toBeGreaterThanOrEqual(2);
+    for (const p of payloads) {
+      const result = await ingestSignal(p, { trustedSender: true });
+      expect(result.deduped).toBe(false);
+    }
+    const rows = db.select().from(schemaMod.evidence).all();
+    expect(rows).toHaveLength(payloads.length);
+    expect(rows.every((r) => r.extractionStatus === 'verified')).toBe(true);
+    expect(rows.every((r) => r.sourceType === 'engagement_event')).toBe(true);
+    expect(rows.every((r) => r.capturedBy === 'connector_outreach')).toBe(true);
   });
 
-  it('re-ingesting the same stub payload dedupes (idempotent across polls)', async () => {
+  it('two fetchSince polls produce byte-identical dedupe material (Date.now advanced between)', async () => {
+    // codex 3.3 r1: re-ingesting the SAME object only proved
+    // ingestSignal dedupes identical input. To prove the CONNECTOR
+    // is deterministic across polls, fetch twice with Date.now
+    // advanced — if any mapper injected Date.now() into snippet/url,
+    // the two polls would diverge. The stubs use only the fixture's
+    // own fields, so they MUST be identical. Then re-ingest the
+    // second poll and assert it dedupes against the first.
     const c = new OutreachConnector(fixture('outreach/engagement.json'));
-    const [first] = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
-    const r1 = await ingestSignal(first, { trustedSender: true });
-    const r2 = await ingestSignal(first, { trustedSender: true });
+    const realNow = Date.now;
+    let a, b;
+    try {
+      Date.now = () => new Date('2026-05-15T00:00:00.000Z').getTime();
+      [a] = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
+      Date.now = () => new Date('2026-05-15T00:05:00.000Z').getTime();
+      [b] = await c.fetchSince(new Date('2026-05-10T00:00:00.000Z'));
+    } finally {
+      Date.now = realNow;
+    }
+    expect(a.captured_by).toBe(b.captured_by);
+    expect(a.source).toBe(b.source);
+    expect(a.account_domain).toBe(b.account_domain);
+    expect(a.source_url).toBe(b.source_url);
+    expect(a.snippet).toBe(b.snippet);
+    expect(a.captured_at).toBe(b.captured_at);
+    const r1 = await ingestSignal(a, { trustedSender: true });
+    const r2 = await ingestSignal(b, { trustedSender: true });
     expect(r1.deduped).toBe(false);
     expect(r2.deduped).toBe(true);
     expect(db.select().from(schemaMod.evidence).all()).toHaveLength(1);

@@ -38,7 +38,14 @@ import { readFileSync } from 'node:fs';
  * simplicity choice, not an oversight.
  *
  * @param fixturePath absolute path to the JSON fixture (an array)
- * @param getTimestamp pulls the ISO-8601 timestamp string off a row
+ * @param getTimestamp pulls the timestamp off a row. Returns
+ *   `unknown` deliberately: the row is untrusted fixture data, so
+ *   the TS type can't promise the field is a string. The loader
+ *   validates it's a non-blank string before `new Date(...)` —
+ *   without that, `new Date(null)` → epoch `0` and
+ *   `new Date(<number>)` → a finite ms value both slip the
+ *   `Number.isFinite` guard and get SILENTLY filtered as "older
+ *   than since" instead of failing loud (codex 3.3 round 1).
  * @param since inclusive lower bound — rows with timestamp >= since
  *   are kept (matches the inclusive `[since, now]` boundary the
  *   GitHub connector and `docs/connectors.md` settled on; the
@@ -48,7 +55,7 @@ import { readFileSync } from 'node:fs';
  */
 export function loadFixtureSince<T>(
   fixturePath: string,
-  getTimestamp: (row: T) => string,
+  getTimestamp: (row: T) => unknown,
   since: Date,
   context: string,
 ): T[] {
@@ -81,16 +88,44 @@ export function loadFixtureSince<T>(
   const kept: T[] = [];
 
   for (let i = 0; i < rows.length; i++) {
-    const tsRaw = getTimestamp(rows[i]);
+    // The row itself may be null / a primitive (a malformed fixture).
+    // `getTimestamp` (e.g. `(c) => c.LastModifiedDate`) would throw a
+    // raw TypeError with no context in that case — wrap it so the
+    // operator sees the connector + path + row index, not a bare
+    // "Cannot read properties of null".
+    let tsRaw: unknown;
+    try {
+      tsRaw = getTimestamp(rows[i]);
+    } catch (err) {
+      throw new Error(
+        `${context} fixture row ${i} is malformed (cannot read its ` +
+        `timestamp field): ${(err as Error).message} (${fixturePath})`,
+      );
+    }
+
+    // Require a non-blank STRING before `new Date(...)`. This is the
+    // load-bearing guard: `new Date(null)` is epoch `0` and
+    // `new Date(<number>)` is a finite ms value — both are
+    // `Number.isFinite`, so a number/null/missing timestamp would
+    // otherwise pass the finiteness check and be silently filtered
+    // out by `>= sinceMs` (it's "before 1970"). For controlled
+    // fixture data that silent loss is a defect; throw instead.
+    if (typeof tsRaw !== 'string' || tsRaw.trim() === '') {
+      throw new Error(
+        `${context} fixture row ${i} has a non-string or blank ` +
+        `timestamp ${JSON.stringify(tsRaw)} — expected an ISO-8601 ` +
+        `string (${fixturePath})`,
+      );
+    }
+
     const ts = new Date(tsRaw).getTime();
-    // `new Date('not-a-date').getTime()` is NaN; NaN compares false
-    // against everything, so without this guard a bad row would be
-    // SILENTLY dropped by the `>= sinceMs` filter (the exact silent-
-    // loss class codex flagged on the GitHub connector). For a
-    // controlled fixture we want the opposite of silent — throw.
+    // Catches malformed strings (`new Date('not-a-date')` → NaN).
+    // ISO-format/offset validity beyond "parses to a finite instant"
+    // is ingestSignal's Zod `.datetime({offset:true})` job, not the
+    // loader's — the loader only needs a usable instant to filter on.
     if (!Number.isFinite(ts)) {
       throw new Error(
-        `${context} fixture row ${i} has an invalid timestamp ` +
+        `${context} fixture row ${i} has an unparseable timestamp ` +
         `${JSON.stringify(tsRaw)} (${fixturePath})`,
       );
     }
