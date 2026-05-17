@@ -1,0 +1,26 @@
+[
+  {
+    "Id": "003old0000001",
+    "Email": "stale@globex.com",
+    "Name": "Stale Contact",
+    "Title": "Analyst",
+    "Account.Domain": "globex.com",
+    "LastModifiedDate": "2026-05-01T10:00:00.000Z"
+  },
+  {
+    "Id": "003bnd0000002",
+    "Email": "alice@globex.com",
+    "Name": "Alice Park",
+    "Title": "VP Engineering",
+    "Account.Domain": "globex.com",
+    "LastModifiedDate": "2026-05-10T00:00:00.000Z"
+  },
+  {
+    "Id": "003new0000003",
+    "Email": "bob@initech.io",
+    "Name": "Bob Lee",
+    "Title": "Director of Platform",
+    "Account.Domain": "initech.io",
+    "LastModifiedDate": "2026-05-12T09:30:00.000Z"
+  }
+]

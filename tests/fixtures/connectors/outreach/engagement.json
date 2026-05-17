@@ -1,0 +1,26 @@
+[
+  {
+    "id": "eng_old",
+    "type": "email_open",
+    "contactEmail": "stale@umbrella.co",
+    "accountDomain": "umbrella.co",
+    "occurredAt": "2026-05-01T11:00:00.000Z",
+    "subject": "Old thread"
+  },
+  {
+    "id": "eng_1",
+    "type": "email_open",
+    "contactEmail": "bob@umbrella.co",
+    "accountDomain": "umbrella.co",
+    "occurredAt": "2026-05-10T00:00:00.000Z",
+    "subject": "Quick intro"
+  },
+  {
+    "id": "eng_2",
+    "type": "reply",
+    "contactEmail": "carol@initech.io",
+    "accountDomain": "initech.io",
+    "occurredAt": "2026-05-12T09:30:00.000Z",
+    "subject": "Re: Quick intro"
+  }
+]

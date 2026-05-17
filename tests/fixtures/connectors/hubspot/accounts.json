@@ -1,0 +1,26 @@
+[
+  {
+    "id": "1000",
+    "domain": "oldco.example",
+    "name": "OldCo",
+    "industry": "Software",
+    "size": "smb",
+    "lastModifiedAt": "2026-05-01T10:00:00.000Z"
+  },
+  {
+    "id": "1001",
+    "domain": "initech.io",
+    "name": "Initech",
+    "industry": "Software",
+    "size": "mid-market",
+    "lastModifiedAt": "2026-05-10T00:00:00.000Z"
+  },
+  {
+    "id": "1002",
+    "domain": "umbrella.co",
+    "name": "Umbrella Corp",
+    "industry": "Biotech",
+    "size": "enterprise",
+    "lastModifiedAt": "2026-05-12T09:30:00.000Z"
+  }
+]
