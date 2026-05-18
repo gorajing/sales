@@ -3870,23 +3870,33 @@ These surfaced during the Task 3.2 self-review. None block 3.2 (codex-converged,
 pushed). They are recorded here so the Phase 3 manual checkpoint (after 3.3+3.4)
 FORCES a decision rather than letting a default ride silently into production.
 
-- **[CHECKPOINT] Connector account identity.** `GitHubConnector` emits
-  `account_domain = github.com/<actor.login>` (`lib/connectors/github.ts`).
-  That string is not a real domain, so GitHub-sourced evidence lives in its
-  own account namespace, disconnected from domain-matched CRM accounts. v1
-  ships siloed; a GitHub-actor→company resolver is deferred to v1.5. **Decide
-  at checkpoint:** accept siloed for the demo, or add a resolution seam.
-  This propagates to every connector (3.3 stubs face the same question), so
-  the principle must be set with the full 3.3+3.4 picture in view.
+- **[RESOLVED 2026-05-18 — accept siloed for v1] Connector account
+  identity.** `GitHubConnector` emits `account_domain =
+  github.com/<actor.login>`, a separate namespace from domain-matched
+  CRM accounts. **Decision: keep it for v1. Do NOT build a GitHub
+  actor→CRM-account resolver now.** Rationale: guessing company
+  identity from a GitHub actor is product logic, not connector
+  plumbing; a bad resolver is WORSE than none because it contaminates
+  account scores with mis-attributed signal. Demo framing: CRM stubs
+  (Salesforce/HubSpot/Outreach) show domain-matched account scoring;
+  GitHub is honestly "developer-ecosystem signal captured in its own
+  namespace." **v1.5:** add an identity-resolution layer or an
+  operator-editable `data/account-aliases.md` (GitHub-actor → company
+  domain) — a deliberate, reviewable mapping, not a guess.
 
-- **[CHECKPOINT] All-or-nothing across watch entries.** `fetchSince` aborts
-  the whole call on any single entry's `ConnectorError` (subsequent entries
-  not polled) — see the contract note in `lib/connectors/types.ts`. Simple
-  and documented, but one stale repo silently starves the connector as the
-  watch list grows. The fix (skip-and-continue + per-entry error channel)
-  changes the `SignalConnector` contract and ripples into the orchestrator,
-  so it must be driven by 3.4's retry/backoff design, not guessed now.
-  **Decide at checkpoint:** keep all-or-nothing, or change the contract.
+- **[RESOLVED 2026-05-18 — accept for v1] All-or-nothing across watch
+  entries.** `GitHubConnector.fetchSince` aborts the whole call on
+  any single watch-entry `ConnectorError`. **Decision: keep
+  fail-loud-per-connector for v1. Do NOT add a per-entry error
+  contract now.** Rationale: Task 3.4's connector-level isolation
+  means a dead GitHub repo no longer starves
+  Salesforce/HubSpot/Outreach, and the failure is loudly visible in
+  the poll response (`{connector:'github', ok:false, error}`) — not
+  swallowed. The only unacceptable option is the half-fix
+  (swallow per-entry failures into warnings); that's explicitly
+  rejected. If per-entry resilience is wanted later it's a deliberate
+  `SignalConnector` contract change (structured per-entry errors),
+  not a silent patch.
 
 - **[TASK 3.3 — RESOLVED 2026-05-17] Shared connector logic / drift.**
   Original prediction: extract a shared `classificationToSignalType()`
