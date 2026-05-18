@@ -1,5 +1,6 @@
 import { db, schema } from '@/db';
 import { eq } from 'drizzle-orm';
+import { isId } from '../id';
 
 /**
  * Acknowledge-alert helper, shared between the HTTP route and the
@@ -21,24 +22,22 @@ import { eq } from 'drizzle-orm';
  *      acknowledger, losing the audit trail of who actually first
  *      saw the alert.
  *
- *   2. **Fail fast on malformed id.** The id format is
- *      `al_yyyymmdd_hex` (set by `newId('alert')` in `lib/id.ts`).
- *      Anything else can't be a real alert id — reject before a DB
- *      SELECT so a probe-URL doesn't generate a `not_found` query
- *      log line per request. Defense in depth against URL-tampering
- *      where the route handler is gated behind a shared secret but
- *      the underlying server action is not.
+ *   2. **Fail fast on malformed id.** The id format is set by
+ *      `newId('alert')`; this validates the WHOLE string via the
+ *      shared `isId('alert', …)` (single-sourced in `lib/id.ts`, so
+ *      no local regex can drift from `newId`). Anything else can't be
+ *      a real alert id — reject before a DB SELECT so a probe-URL
+ *      doesn't generate a `not_found` query log line per request.
+ *      Defense in depth against URL-tampering where the route handler
+ *      is gated behind a shared secret but the server action is not.
  */
 
 export type AckResult =
   | { ok: true; alreadyAcked: boolean }
   | { ok: false; reason: 'not_found' };
 
-/** Stable id-shape regex. Matches `al_<YYYYMMDD>_<10-hex>` exactly. */
-const ALERT_ID_RE = /^al_\d{8}_[0-9a-f]{10}$/;
-
 export function acknowledgeAlert(id: string, by: string): AckResult {
-  if (!ALERT_ID_RE.test(id)) {
+  if (!isId('alert', id)) {
     // Malformed id can't be a real alert — return not_found without a
     // DB round-trip. This is functionally indistinguishable from
     // "alert doesn't exist" but skips the wire cost of probing.

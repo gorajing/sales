@@ -9,13 +9,16 @@ import {
 import { newId } from '../../lib/id';
 
 /**
- * The Phase 6 pre-submit gate. Its whole purpose is to make
- * "every factual claim cites verified evidence" and "fact-check
- * generated prose before use" FAIL CLOSED — the human writes/approves
- * the prose, but the system cannot ship a cover letter that cites an
- * evidence id it can't back. These tests pin that the gate actually
- * rejects the unbacked cases (a permissive verifier is worse than
- * none — it would launder weak claims with a green check).
+ * The Phase 6 pre-submit gate. The broad contract goal ("every
+ * factual claim cites verified evidence; fact-check prose before
+ * use") is NOT mechanically decidable — the gate does not claim to
+ * enforce it. It makes the CHECKABLE slice FAIL CLOSED: every
+ * evidence id the letter CITES must resolve to a `verified` row,
+ * plus structural + length floors. An unbacked but UNCITED claim is
+ * invisible to it and stays a human re-read step. These tests pin
+ * that the gate rejects the cited-but-unbacked cases (a permissive
+ * verifier is worse than none — it would launder a weak CITATION
+ * with a green check).
  */
 
 const VERIFIED = 'ev_20260418_0110a19b93';
@@ -43,16 +46,24 @@ describe('extractCitedEvidenceIds', () => {
     expect(extractCitedEvidenceIds(text)).toEqual([]);
   });
 
-  it('round-trips a REAL newId("evidence") — id-format drift fails loud here', () => {
-    // The gate's pattern is single-sourced from newId via idRegExp.
-    // If newId's construction ever drifts (suffix length/charset, date
-    // width) without idRegExp tracking it, a freshly-minted id stops
-    // being recognized — in production that is a silently-missed
-    // unbacked citation. This pins the round-trip so the drift fails
-    // HERE, loudly, instead of there, silently.
-    const id = newId('evidence');
-    const text = `The target's ARR doubled last year, per ${id}.`;
-    expect(extractCitedEvidenceIds(text)).toEqual([id]);
+  it('round-trips freshly-minted newId("evidence") ids — format drift fails loud here', () => {
+    // extractCitedEvidenceIds derives its pattern from newId via the
+    // single-sourced ID_BODY (idRegExp). If newId's construction
+    // drifts (separator, date width, suffix length) without ID_BODY
+    // tracking it, a fresh id stops being recognized — in production
+    // a silently-missed unbacked citation. This pins the round-trip
+    // so drift fails HERE, loudly.
+    //
+    // Looped because newId's hex suffix is random: structural drift
+    // fails on iteration 1; charset drift ([0-9a-f]) is probabilistic
+    // per id, so many iterations make a-f coverage effectively
+    // certain. It still does not PROVE charset (a round-trip can't, if
+    // newId and the pattern drifted in lockstep) — it makes the
+    // common, independent drift loud.
+    for (let i = 0; i < 50; i++) {
+      const id = newId('evidence');
+      expect(extractCitedEvidenceIds(`ARR per ${id}, fyi.`)).toEqual([id]);
+    }
   });
 });
 

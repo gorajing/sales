@@ -7,16 +7,20 @@
  *
  * # Why this exists
  *
- * Phase 6 produces a real job-application package. The contract:
- * "every factual claim about the target cites verified evidence"
- * and "generated prose is fact-checked against evidence before
- * use". This module turns those from a HOPE into a gate that FAILS
- * CLOSED: the human still writes and approves the cover letter, but
- * the system refuses to bless a letter that cites an evidence id it
- * cannot back with a `verified` row. Same epistemic-honesty
- * discipline as the Phase 4 sample-size guardrail — a permissive
- * verifier would be worse than none, laundering an unbacked claim
- * with a green check.
+ * Phase 6 produces a real job-application package. The contract
+ * GOAL is "every factual claim about the target cites verified
+ * evidence, and generated prose is fact-checked before use". That
+ * full goal is NOT mechanically decidable, so this module does not
+ * pretend to enforce it. It turns the MECHANICALLY CHECKABLE SLICE
+ * into a gate that FAILS CLOSED: every evidence id the letter CITES
+ * must resolve to a `verified` row (plus structural + length
+ * floors). The human still writes, fact-checks, and approves the
+ * prose; the system only refuses to bless a letter that cites an
+ * evidence id it cannot back with a `verified` row. Same
+ * epistemic-honesty discipline as the Phase 4 sample-size guardrail
+ * — a permissive verifier would be worse than none, laundering an
+ * unbacked CITATION with a green check (an unbacked but UNCITED
+ * claim is invisible to it — see the next section).
  *
  * # Precise guarantee (do not overstate it)
  *
