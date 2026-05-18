@@ -1,7 +1,7 @@
 import { spawnClaude as realSpawn } from '../claude/run';
 import { renderPrompt } from '../claude/prompts';
 import {
-  loadDraftTouchSkill, loadPrinciples, loadIcp,
+  loadDraftTouchSkill, loadPrinciples, loadIcp, loadPrincipleOutcomes,
 } from '../claude/prompts/draft-touch';
 import { DraftTouch } from '../claude/types';
 import { validateDraft } from '../evidence/validate';
@@ -60,6 +60,11 @@ export async function draftTouch(
       { heading: 'Skill', body: loadDraftTouchSkill() },
       { heading: 'ICP brief', body: loadIcp() },
       { heading: 'Principles', body: loadPrinciples() },
+      // ADVISORY only — descriptive correlation, not causal, not a
+      // score input, never auto-applied. The file's preamble repeats
+      // this; the heading reinforces it so the model treats it as
+      // context, not instruction (Phase 4.4).
+      { heading: 'Principle outcomes (advisory)', body: loadPrincipleOutcomes() },
       { heading: 'Account evidence pack', body: JSON.stringify(evidencePack, null, 2) },
       { heading: 'Position', body: `Touch ${touch!.position} of ${totalTouches}. Channel: ${touch!.channel}.` },
       { heading: 'Prior touches', body: JSON.stringify(priorRevisions.map((r) => ({

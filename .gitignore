@@ -6,6 +6,10 @@ data/sales.db
 data/sales.db-journal
 data/*.db-shm
 data/*.db-wal
+# Generated nightly by scripts/nightly-digest.ts — a machine artifact,
+# not operator-edited source like the other data/*.md. The drafter has
+# a missing-file fallback, so an absent file is the normal early state.
+data/principle-outcomes.md
 .DS_Store
 dist/
 build/
