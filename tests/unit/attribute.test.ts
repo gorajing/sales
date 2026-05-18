@@ -22,6 +22,7 @@ import { newId } from '../../lib/id';
 import {
   computePrincipleOutcomes,
   parsePrincipleIds,
+  parseTs,
   renderOutcomesMarkdown,
   MIN_SAMPLE,
 } from '../../lib/engagement/attribute';
@@ -65,6 +66,13 @@ function makeTouch(
   const revId = newId('touchRevision');
   db.insert(schemaMod.touchRevisions).values({
     id: revId, touchId, revisionNumber: 1, body: 'x', createdBy: 'drafter',
+    // Realistic timeline: the revision is created BEFORE it is sent
+    // and BEFORE any engagement events (10:00 < sent 11:00 < reply
+    // 12:00). Without this the column defaults to CURRENT_TIMESTAMP
+    // (~now), which is AFTER the 2026-05-06 events — the
+    // redraft-ambiguity guard would (correctly) exclude such a
+    // temporally-impossible fixture.
+    createdAt: '2026-05-06T10:00:00.000Z',
   }).run();
   db.update(schemaMod.touches).set({ currentRevisionId: revId })
     .where(eq(schemaMod.touches.id, touchId)).run();
@@ -147,11 +155,11 @@ describe('computePrincipleOutcomes — attribution trace', () => {
     makeTouch(['P5'], false);  // failed P5, silent
     const outcomes = await computePrincipleOutcomes(PRINCIPLES);
     const p5 = outcomes.find((o) => o.principle_id === 'P5')!;
-    expect(p5.failed_total).toBe(2);          // touches 1 & 3
-    expect(p5.failed_replied).toBe(1);        // touch 1
-    expect(p5.passed_total).toBe(1);          // touch 2
+    expect(p5.flagged_total).toBe(2);          // touches 1 & 3
+    expect(p5.flagged_replied).toBe(1);        // touch 1
+    expect(p5.noFinding_total).toBe(1);          // touch 2
     const p1 = outcomes.find((o) => o.principle_id === 'P1')!;
-    expect(p1.passed_total).toBe(3);          // P1 never failed
+    expect(p1.noFinding_total).toBe(3);          // P1 never failed
   });
 
   it('uses only the LATEST sales_coach critique per current revision (re-critique supersedes)', async () => {
@@ -165,8 +173,8 @@ describe('computePrincipleOutcomes — attribution trace', () => {
     }).run();
     const outcomes = await computePrincipleOutcomes(PRINCIPLES);
     const p5 = outcomes.find((o) => o.principle_id === 'P5')!;
-    expect(p5.failed_total).toBe(0);  // latest critique passed P5
-    expect(p5.passed_total).toBe(1);
+    expect(p5.flagged_total).toBe(0);  // latest critique passed P5
+    expect(p5.noFinding_total).toBe(1);
   });
 
   it('writes NOTHING — no lead_scores, no evidence, no principles mutation (advisory only, never scoring)', async () => {
@@ -188,7 +196,7 @@ describe('computePrincipleOutcomes — sample-size guardrail', () => {
     expect(typeof MIN_SAMPLE).toBe('number');
   });
 
-  it('marks a thin principle insufficient and refuses a fail_lift from tiny n', async () => {
+  it('marks a thin principle insufficient and refuses a flagged_lift from tiny n', async () => {
     // 1 failed touch, 1 passed touch for P5 — far below MIN_SAMPLE.
     makeTouch(['P5'], true);
     makeTouch([], false);
@@ -196,30 +204,30 @@ describe('computePrincipleOutcomes — sample-size guardrail', () => {
       .find((o) => o.principle_id === 'P5')!;
     expect(p5.sufficient).toBe(false);
     // No authoritative-looking lift from n=1 arms.
-    expect(p5.fail_lift).toBeNull();
+    expect(p5.flagged_lift).toBeNull();
   });
 
-  it('computes fail_lift ONLY when BOTH arms reach MIN_SAMPLE (one thin arm → null)', async () => {
+  it('computes flagged_lift ONLY when BOTH arms reach MIN_SAMPLE (one thin arm → null)', async () => {
     // MIN_SAMPLE+2 touches that FAIL P5 (replied), but only 1 that PASSES P5.
     for (let i = 0; i < MIN_SAMPLE + 2; i++) makeTouch(['P5'], true);
     makeTouch([], true);  // single passed-P5 arm → thin
     const p5 = (await computePrincipleOutcomes(PRINCIPLES))
       .find((o) => o.principle_id === 'P5')!;
-    expect(p5.failed_total).toBeGreaterThanOrEqual(MIN_SAMPLE);
-    expect(p5.passed_total).toBeLessThan(MIN_SAMPLE);
+    expect(p5.flagged_total).toBeGreaterThanOrEqual(MIN_SAMPLE);
+    expect(p5.noFinding_total).toBeLessThan(MIN_SAMPLE);
     expect(p5.sufficient).toBe(false);   // the PASS arm is thin
-    expect(p5.fail_lift).toBeNull();     // no lift from a 1-sample arm
+    expect(p5.flagged_lift).toBeNull();     // no lift from a 1-sample arm
   });
 
-  it('reports sufficient + a fail_lift once BOTH arms reach MIN_SAMPLE', async () => {
+  it('reports sufficient + a flagged_lift once BOTH arms reach MIN_SAMPLE', async () => {
     for (let i = 0; i < MIN_SAMPLE; i++) makeTouch(['P5'], i % 2 === 0);  // failed arm, mixed replies
     for (let i = 0; i < MIN_SAMPLE; i++) makeTouch([], i % 3 === 0);      // passed arm, mixed replies
     const p5 = (await computePrincipleOutcomes(PRINCIPLES))
       .find((o) => o.principle_id === 'P5')!;
-    expect(p5.passed_total).toBeGreaterThanOrEqual(MIN_SAMPLE);
-    expect(p5.failed_total).toBeGreaterThanOrEqual(MIN_SAMPLE);
+    expect(p5.noFinding_total).toBeGreaterThanOrEqual(MIN_SAMPLE);
+    expect(p5.flagged_total).toBeGreaterThanOrEqual(MIN_SAMPLE);
     expect(p5.sufficient).toBe(true);
-    expect(typeof p5.fail_lift).toBe('number');
+    expect(typeof p5.flagged_lift).toBe('number');
   });
 });
 
@@ -230,13 +238,13 @@ describe('computePrincipleOutcomes — sample-size guardrail', () => {
 describe('computePrincipleOutcomes — observable population', () => {
   it('EXCLUDES drafted-but-unsent touches from the denominator (no fabricated silent rows)', async () => {
     // 1 SENT touch failing P5 (replied) + many UNSENT drafts failing
-    // P5. The unsent drafts must NOT inflate failed_total or push P5
+    // P5. The unsent drafts must NOT inflate flagged_total or push P5
     // toward "sufficient" — only the sent touch is observable.
     makeTouch(['P5'], true);
     for (let i = 0; i < MIN_SAMPLE + 5; i++) makeUnsentTouch(['P5']);
     const p5 = (await computePrincipleOutcomes(PRINCIPLES))
       .find((o) => o.principle_id === 'P5')!;
-    expect(p5.failed_total).toBe(1);     // ONLY the sent touch
+    expect(p5.flagged_total).toBe(1);     // ONLY the sent touch
     expect(p5.sufficient).toBe(false);   // unsent drafts didn't count
   });
 
@@ -248,29 +256,110 @@ describe('computePrincipleOutcomes — observable population', () => {
     }).run();
     const p5 = (await computePrincipleOutcomes(PRINCIPLES))
       .find((o) => o.principle_id === 'P5')!;
-    expect(p5.failed_total).toBe(1);
-    expect(p5.failed_replied).toBe(1);   // meeting_booked = positive
-    expect(p5.failed_silent).toBe(0);
+    expect(p5.flagged_total).toBe(1);
+    expect(p5.flagged_replied).toBe(1);   // meeting_booked = positive
+    expect(p5.flagged_silent).toBe(0);
   });
 
-  it('picks the latest critique correctly across mixed SQLite-space and ISO-Z timestamps (UTC)', async () => {
-    // First critique flags P5 at a SQLite-format UTC time that is
-    // CHRONOLOGICALLY LATER than the ISO-Z second critique, but whose
-    // naive local-time parse could look earlier. The flagged-P5 one
-    // must win → P5 flagged.
-    const touchId = makeTouch([], true, '2020-01-01T00:00:00.000Z'); // baseline pass critique (ISO)
+  it('parseTs treats the SQLite space-format as UTC (TZ-independent, pins the codex r1 blocker)', () => {
+    // Direct parser test — robust regardless of the test runner's
+    // local TZ (codex r2: the old integration test used 2020 vs 2026
+    // so a naive local parse still picked the right one and the bug
+    // wasn't pinned). The bare SQLite CURRENT_TIMESTAMP format is
+    // UTC; `new Date('2026-05-06 12:00:00')` would read it as LOCAL.
+    const sqliteUtc = parseTs('2026-05-06 12:00:00');
+    expect(sqliteUtc).toBe(Date.UTC(2026, 4, 6, 12, 0, 0));
+    // Equivalent ISO-Z must parse to the SAME instant.
+    expect(sqliteUtc).toBe(parseTs('2026-05-06T12:00:00.000Z'));
+    // And it must NOT be the naive local interpretation whenever the
+    // runner is not UTC (in UTC they coincide — assertion still
+    // holds; off-UTC it actively catches the bug).
+    const naiveLocal = new Date('2026-05-06 12:00:00').getTime();
+    if (new Date().getTimezoneOffset() !== 0) {
+      expect(sqliteUtc).not.toBe(naiveLocal);
+    }
+  });
+
+  it('picks the chronologically-later critique when SQLite-UTC and ISO-Z formats are mixed', async () => {
+    // Same-instant-relevant: a SQLite-format critique that is
+    // genuinely LATER (in UTC) than an ISO-Z one must win, proving
+    // the sort uses parseTs, not naive new Date().
+    const touchId = makeTouch([], true, '2026-05-06T10:00:00.000Z'); // ISO pass, 10:00Z
     const rev = db.select().from(schemaMod.touchRevisions)
       .where(eq(schemaMod.touchRevisions.touchId, touchId)).get()!;
     db.insert(schemaMod.critiques).values({
       id: newId('critique'), touchRevisionId: rev.id,
       criticName: 'sales_coach', verdict: 'revise',
       findingsJson: [{ issue: 'x', quote: '', suggested_rewrite: null, principle_id: 'P5' }],
-      createdAt: '2026-05-06 12:00:00',  // SQLite UTC space-format, far later
+      createdAt: '2026-05-06 11:00:00',  // SQLite UTC, 11:00Z — later
     }).run();
     const p5 = (await computePrincipleOutcomes(PRINCIPLES))
       .find((o) => o.principle_id === 'P5')!;
-    expect(p5.failed_total).toBe(1);  // the later SQLite-format critique won
-    expect(p5.passed_total).toBe(0);
+    expect(p5.flagged_total).toBe(1);  // 11:00Z SQLite critique won
+    expect(p5.noFinding_total).toBe(0);
+  });
+
+  it('EXCLUDES a touch redrafted AFTER engagement began (ambiguous attribution — codex r2 blocker)', async () => {
+    // Send rev1, get a reply, THEN redraft to rev2. currentRevisionId
+    // now points at rev2, but the reply responded to rev1 — we cannot
+    // attribute it. The touch must be dropped, NOT mis-attributed to
+    // rev2's critique. (A bunch of these must not become evidence.)
+    const accountId = newId('account');
+    db.insert(schemaMod.accounts).values({ id: accountId, name: 'X' }).run();
+    const sequenceId = newId('sequence');
+    db.insert(schemaMod.sequences).values({ id: sequenceId, accountId }).run();
+    const touchId = newId('touch');
+    db.insert(schemaMod.touches).values({
+      id: touchId, sequenceId, position: 1, channel: 'email',
+    }).run();
+    // rev1, critiqued (flags P5), then sent + replied.
+    const rev1 = newId('touchRevision');
+    db.insert(schemaMod.touchRevisions).values({
+      id: rev1, touchId, revisionNumber: 1, body: 'v1', createdBy: 'drafter',
+      createdAt: '2026-05-01T00:00:00.000Z',
+    }).run();
+    db.insert(schemaMod.critiques).values({
+      id: newId('critique'), touchRevisionId: rev1, criticName: 'sales_coach',
+      verdict: 'revise',
+      findingsJson: [{ issue: 'x', quote: '', suggested_rewrite: null, principle_id: 'P5' }],
+      createdAt: '2026-05-01T00:00:00.000Z',
+    }).run();
+    db.update(schemaMod.touches).set({ currentRevisionId: rev1 })
+      .where(eq(schemaMod.touches.id, touchId)).run();
+    db.insert(schemaMod.engagementEvents).values({
+      id: newId('engagementEvent'), touchId, contactId: null,
+      eventType: 'replied', occurredAt: '2026-05-05T00:00:00.000Z',
+    }).run();
+    // THEN redraft → rev2 created AFTER the reply event.
+    const rev2 = newId('touchRevision');
+    db.insert(schemaMod.touchRevisions).values({
+      id: rev2, touchId, revisionNumber: 2, body: 'v2', createdBy: 'drafter',
+      createdAt: '2026-05-10T00:00:00.000Z',  // after the 05-05 reply
+    }).run();
+    db.insert(schemaMod.critiques).values({
+      id: newId('critique'), touchRevisionId: rev2, criticName: 'sales_coach',
+      verdict: 'pass', findingsJson: [], createdAt: '2026-05-10T00:00:00.000Z',
+    }).run();
+    db.update(schemaMod.touches).set({ currentRevisionId: rev2 })
+      .where(eq(schemaMod.touches.id, touchId)).run();
+
+    const p5 = (await computePrincipleOutcomes(PRINCIPLES))
+      .find((o) => o.principle_id === 'P5')!;
+    // Ambiguous → excluded from BOTH arms entirely.
+    expect(p5.flagged_total).toBe(0);
+    expect(p5.noFinding_total).toBe(0);
+  });
+
+  it('EXCLUDES a bounced touch from the denominator (deliverability failure ≠ silent — codex r2)', async () => {
+    const touchId = makeTouch(['P5'], false);  // sent, no reply
+    db.insert(schemaMod.engagementEvents).values({
+      id: newId('engagementEvent'), touchId, contactId: null,
+      eventType: 'bounced', occurredAt: '2026-05-06T11:30:00.000Z',
+    }).run();
+    const p5 = (await computePrincipleOutcomes(PRINCIPLES))
+      .find((o) => o.principle_id === 'P5')!;
+    expect(p5.flagged_total).toBe(0);   // bounced → not a valid observation
+    expect(p5.noFinding_total).toBe(0);
   });
 });
 
@@ -333,8 +422,8 @@ describe('renderOutcomesMarkdown — epistemic honesty', () => {
     const p5 = (await computePrincipleOutcomes(PRINCIPLES))
       .find((o) => o.principle_id === 'P5')!;
     expect(p5.sufficient).toBe(true);
-    expect(p5.passed_replied).toBe(0);
-    expect(p5.failed_replied).toBe(MIN_SAMPLE);
+    expect(p5.noFinding_replied).toBe(0);
+    expect(p5.flagged_replied).toBe(MIN_SAMPLE);
     const md = renderOutcomesMarkdown([p5]);
     const line = md.split('\n').find((l) => l.includes('P5'))!;
     expect(line).toMatch(/strong inverse|investigate/i);
