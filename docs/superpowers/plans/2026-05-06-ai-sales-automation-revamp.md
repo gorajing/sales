@@ -3939,6 +3939,20 @@ FORCES a decision rather than letting a default ride silently into production.
   net. Not a checkpoint blocker — connector orchestration is correct
   and converged with the duplication pinned by tests.
 
+- **[PHASE 4 — v1.5 PREREQUISITE] Engagement provider-normalization
+  shim.** `/api/engagement` accepts the strict normalized
+  `EngagementPayload` (same `.strict()` convention as
+  `/api/signals`/`SignalPayload`). There is NO per-provider shim in
+  v1: raw SendGrid/Outreach webhook bodies carry envelopes/extra
+  fields and WILL 400 against `.strict()`. v1 callers must already
+  speak the normalized shape (test suite, internal tooling). Before
+  ANY real provider webhook is wired, a per-provider mapping shim
+  (raw provider body → `EngagementPayload`) is a prerequisite — the
+  `.strict()` 400 is the intended loud signal it's missing, not a
+  silent drop to absorb. codex Phase 4 r2. Not a v1 blocker (no real
+  provider is wired in v1); a hard prerequisite for v1.5 provider
+  integration.
+
 - **[PHASE 4 — v1.5 RENAME CANDIDATE] "engagement" name collision.**
   Two architecturally distinct subsystems share the word:
   (1) the `engagement_events` TABLE (Phase 4 feedback loop — touch

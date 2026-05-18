@@ -15,15 +15,23 @@ import { ingestEngagement, EngagementRejectedError } from '@/lib/engagement/inge
  * # Normalized contract, not a raw provider firehose
  *
  * This endpoint accepts the project's OWN normalized
- * `EngagementPayload` (`.strict()` — unknown keys are a 400), NOT
- * raw SendGrid/Outreach webhook bodies. A per-provider integration
- * shim is responsible for mapping a provider's payload (which
- * carries envelopes and extra fields) into this shape before
- * POSTing. This is the same convention `/api/signals` uses with
- * `SignalPayload.strict()` — our ingest contracts are strict by
- * design; normalization is the shim's job, not the boundary's. A
- * benign provider field 400-ing here is the intended signal that
- * the shim is out of date, not noise to be silently absorbed.
+ * `EngagementPayload` (`.strict()` — unknown keys are a 400), the
+ * same strict-contract convention `/api/signals` uses with
+ * `SignalPayload.strict()` (our ingest boundaries are strict by
+ * design).
+ *
+ * IMPORTANT — current state (v1): there is NO per-provider
+ * normalization shim yet. Raw SendGrid/Outreach webhook bodies
+ * carry envelopes and extra fields and WILL 400 against
+ * `.strict()`. So today this endpoint is consumed by callers that
+ * already speak the normalized shape (the test suite, internal
+ * tooling) — pointing a raw provider webhook straight at it will
+ * drop events on benign envelope fields. A per-provider mapping
+ * shim is a documented v1.5 prerequisite before any real provider
+ * is wired (see the plan's Phase 4 deferred-seams note). The
+ * `.strict()` 400 is the intended LOUD signal that such a shim is
+ * required — not noise to silently absorb, and not a claim that a
+ * shim already exists.
  *
  * Hardening mirrors `/api/signals` exactly (same threat model: a
  * public webhook taking untrusted third-party JSON), using the
