@@ -3901,13 +3901,33 @@ FORCES a decision rather than letting a default ride silently into production.
   recorded: predicted-seam ≠ actual-seam; the shared abstraction emerged
   from the three concrete implementations, not the forecast.
 
-- **[TASK 3.4 DEFERRAL] Drain-until-empty polling cost.** The GitHub
-  connector re-fetches ~3 pages of stale events per cold repo per poll
-  (early-stop removed for cross-page-order correctness — see jsdoc in
-  `lib/connectors/github.ts`). Pure efficiency, not correctness. The proper
-  fix is watermark/ETag persistence, which the plan already assigns to the
-  orchestrator (`connector_state`, deferred). Revisit only if 3.4 adds
-  watermark persistence.
+- **[TASK 3.4 — LARGELY RESOLVED 2026-05-18] Drain-until-empty polling
+  cost.** The GitHub connector re-fetches stale pages per cold repo per
+  poll (early-stop removed for cross-page-order correctness — jsdoc in
+  `lib/connectors/github.ts`). Task 3.4 added the `connector_poll_state`
+  watermark, so each poll's `since` advances to the prior poll-start
+  instead of a fixed `now − 24h` — a cold repo now passes a recent
+  `since` and drains far fewer stale pages. The residual (GitHub's
+  Events API has no server-side `since`, so SOME stale pages are still
+  fetched within the window) is pure efficiency, not correctness, and
+  bounded by `PAGE_CAP`. ETag/conditional-request optimization remains a
+  future refinement; no further action needed for v1.
+
+- **[TASK 3.4 DEFERRED SEAM — now feasible] Unify the recompute core
+  with `/api/scoring/recompute`.** `recomputeAffectedAccounts`
+  (lib/connectors/poll.ts) deliberately mirrors the route's gating +
+  config-before-mutation invariant rather than sharing one
+  `recomputeAccount` core. An earlier code comment justified this with
+  "the route has no route-level test" — codex 3.4 r3 caught that as
+  FALSE (`tests/integration/inbound-pipeline.test.ts` covers it,
+  including the malformed-routing no-side-effect case). So a unification
+  IS feasible with a regression net; it was deferred purely as a
+  Task-3.4 scope boundary (refactoring the route's ~150-line hardened
+  HTTP handler is a separate change). Clean follow-up task: extract a
+  shared `recomputeAccount(accountId, cfg)` consumed by BOTH the route
+  and the connector path; the parity tests on both sides become the
+  net. Not a checkpoint blocker — connector orchestration is correct
+  and converged with the duplication pinned by tests.
 
 ### Task 3.1: Connector interface
 

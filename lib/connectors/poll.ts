@@ -25,16 +25,31 @@ import type { SignalConnector } from './types';
  *
  * # Why not share the recompute core with /api/scoring/recompute?
  *
- * That route's orchestration is entangled with HTTP-boundary concerns
- * (body bounding, 404 vs 500 vs 503 status distinctions) and — the
- * decisive point — has NO route-level test to refactor against
- * safely. Extracting a shared core from converged, hardened,
- * untested-at-the-route-level code mid-Task-3.4 is the
- * refactor-without-a-safety-net anti-pattern. The gating + the
- * config-before-mutation invariant live HERE in one place (used by
- * the endpoint AND the scheduler — no triplication within 3.4's
- * surface) and parity with the route is pinned by tests. Unifying
- * the two is a deliberate future seam — see docs/connectors.md.
+ * Honest accounting (corrected after codex 3.4 r3): an earlier
+ * version of this comment claimed the recompute route had "no
+ * route-level test," making a shared-core extraction unsafe. That
+ * was FALSE — `tests/integration/inbound-pipeline.test.ts` covers
+ * the route end to end, including its config-before-mutation
+ * no-side-effect case. So a unification IS feasible with a safety
+ * net; the deferral is a deliberate SCOPE decision, not a capability
+ * gap:
+ *
+ *   - Task 3.4 was explicitly scoped to "connector polling endpoint
+ *     + scheduler." Refactoring `/api/scoring/recompute`'s ~150-line
+ *     hardened HTTP handler to extract a shared core is a separate
+ *     change with its own review surface (status-code distinctions,
+ *     body bounding, the 404/503 ordering) — folding it in here
+ *     would balloon this task's blast radius into converged code the
+ *     task doesn't otherwise touch.
+ *   - The gating + config-before-mutation invariant live HERE in one
+ *     place (used by the endpoint AND the scheduler — no triplication
+ *     within 3.4's surface) and parity with the route is pinned by
+ *     tests on BOTH sides.
+ *
+ * Unifying the two into one `recomputeAccount` core is a clean,
+ * now-feasible follow-up — recorded as a deferred seam in the plan
+ * (Phase 3 open decisions) and docs/connectors.md, NOT a hidden
+ * limitation.
  *
  * # Connectors never write the DB
  *
