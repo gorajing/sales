@@ -107,7 +107,18 @@ const MAX_DOMAIN_LEN = 253;          // RFC 1035 §3.1
 const MAX_FACT_CHARS = 500;
 const MAX_SNIPPET_CHARS = 1500;
 const MAX_METADATA_BYTES = 8 * 1024; // serialized JSON cap; keeps payloads sane
-const FUTURE_SKEW_MS = 10 * 60 * 1000; // 10 minutes of permitted clock skew
+/**
+ * Permitted clock skew for upstream event timestamps. Exported so the
+ * engagement-event ingest (Phase 4) composes the SAME future-skew
+ * policy from this shared constant + the shared
+ * `ISO_DATETIME_WITH_OFFSET` rather than re-hardcoding 10 minutes —
+ * "same canonical UTC-Z policy" as `evidence.captured_at`. Kept as a
+ * primitive (vs. exporting a fully-composed timestamp schema) so the
+ * converged `captured_at` definition below is NOT refactored
+ * mid-Phase-4; the 2-line `.refine(skew)` composition is acknowledged
+ * minor duplication, chosen over touching converged code.
+ */
+export const FUTURE_SKEW_MS = 10 * 60 * 1000; // 10 minutes of permitted clock skew
 
 const nonBlank = (msg: string) =>
   z.string().refine((s) => s.trim().length > 0, { message: msg });
