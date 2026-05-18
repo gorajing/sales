@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { db, schema } from '@/db';
 import { eq, sql } from 'drizzle-orm';
 import { newId } from '../id';
+import { isUniqueViolation } from '../db-errors';
 import {
   SignalPayload, TRUSTED_SOURCES, type CapturedBy, type SignalPayload as SignalPayloadT,
 } from './types';
@@ -38,14 +39,6 @@ export interface IngestOptions {
    * attacker from forging a trusted-source label via an open webhook.
    */
   trustedSender?: boolean;
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  // Narrow to UNIQUE / PRIMARY KEY constraint violations only. FK / NOT NULL /
-  // CHECK violations are real bugs and must propagate.
-  const e = err as { code?: string };
-  return e?.code === 'SQLITE_CONSTRAINT_UNIQUE'
-      || e?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
 }
 
 /**

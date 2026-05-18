@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '@/db';
 import { newId } from '../id';
+import { isUniqueViolation } from '../db-errors';
 import { ISO_DATETIME_WITH_OFFSET, FUTURE_SKEW_MS } from '../signals/types';
 
 /**
@@ -9,8 +10,28 @@ import { ISO_DATETIME_WITH_OFFSET, FUTURE_SKEW_MS } from '../signals/types';
  *
  * Engagement events are FACTS from outreach providers (Outreach,
  * SendGrid), not scoring evidence. This path NEVER writes `evidence`
- * and the events never enter the lead score — they exist only for the
+ * and these rows never enter the lead score — they exist only for the
  * feedback loop (4.3 attribution → advisory drafter context).
+ *
+ * # Two distinct subsystems share the word "engagement" — do not conflate
+ *
+ *   1. THIS — the `engagement_events` TABLE (Phase 4). Touch-level
+ *      outcome facts (a reply landed on touch X). Feeds attribution
+ *      → `principle-outcomes.md` → ADVISORY drafter context. Never
+ *      scored. Never written via `ingestSignal`.
+ *   2. `evidence.source_type = 'engagement_event'` (Phase 3). The
+ *      Outreach *connector* emitting engagement as a forward SCORING
+ *      signal (someone engaged → possible intent). Goes through
+ *      `ingestSignal` → `evidence` and CAN move the lead score if a
+ *      scoring rule matches. This is intentional, user-reviewed
+ *      Phase 3 design — NOT a Phase 4 contract violation. The Phase 4
+ *      "never hidden scoring" contract governs subsystem (1)'s
+ *      feedback loop, not subsystem (2)'s forward signal.
+ *
+ * The shared name is a clarity hazard (codex Phase 4 r1 conflated
+ * them). A v1.5 rename of one side is recorded as a deferred seam in
+ * the plan. Until then: this module is subsystem (1) ONLY and must
+ * never import `ingestSignal` or write `evidence`.
  *
  * Contract (see the Phase 4 contract):
  *   - Identity/dedupe: `external_id` UNIQUE is the webhook-redelivery
@@ -60,13 +81,6 @@ export const EngagementPayload = z.object({
   metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 export type EngagementPayload = z.infer<typeof EngagementPayload>;
-
-function isUniqueViolation(err: unknown): boolean {
-  // UNIQUE / PRIMARY KEY only — FK / NOT NULL / CHECK must propagate.
-  const e = err as { code?: string };
-  return e?.code === 'SQLITE_CONSTRAINT_UNIQUE'
-      || e?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
-}
 
 export async function ingestEngagement(
   raw: unknown,

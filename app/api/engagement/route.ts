@@ -8,13 +8,26 @@ import {
 import { ingestEngagement, EngagementRejectedError } from '@/lib/engagement/ingest';
 
 /**
- * POST /api/engagement — third-party outreach-provider webhook
- * (Outreach, SendGrid, …). Engagement events are FACTS for the
- * feedback loop, never scoring evidence.
+ * POST /api/engagement — engagement-event ingest for the feedback
+ * loop. Engagement events are FACTS (sent/opened/replied/…), never
+ * scoring evidence.
  *
- * Hardening mirrors `/api/signals` exactly (it's the same threat
- * model: a public webhook taking untrusted third-party JSON), using
- * the shared `lib/alerts/http.ts` primitives:
+ * # Normalized contract, not a raw provider firehose
+ *
+ * This endpoint accepts the project's OWN normalized
+ * `EngagementPayload` (`.strict()` — unknown keys are a 400), NOT
+ * raw SendGrid/Outreach webhook bodies. A per-provider integration
+ * shim is responsible for mapping a provider's payload (which
+ * carries envelopes and extra fields) into this shape before
+ * POSTing. This is the same convention `/api/signals` uses with
+ * `SignalPayload.strict()` — our ingest contracts are strict by
+ * design; normalization is the shim's job, not the boundary's. A
+ * benign provider field 400-ing here is the intended signal that
+ * the shim is out of date, not noise to be silently absorbed.
+ *
+ * Hardening mirrors `/api/signals` exactly (same threat model: a
+ * public webhook taking untrusted third-party JSON), using the
+ * shared `lib/alerts/http.ts` primitives:
  *   - `ENGAGEMENT_WEBHOOK_SECRET` unset in production → 503 fail-safe
  *   - secret set + missing/wrong `X-Webhook-Secret` → 401
  *     (timing-safe compare — NOT the `got !== expected` the plan

@@ -3939,6 +3939,22 @@ FORCES a decision rather than letting a default ride silently into production.
   net. Not a checkpoint blocker — connector orchestration is correct
   and converged with the duplication pinned by tests.
 
+- **[PHASE 4 — v1.5 RENAME CANDIDATE] "engagement" name collision.**
+  Two architecturally distinct subsystems share the word:
+  (1) the `engagement_events` TABLE (Phase 4 feedback loop — touch
+  outcome facts → attribution → ADVISORY drafter context; never
+  scored), and (2) `evidence.source_type = 'engagement_event'`
+  (Phase 3 Outreach *connector* — a forward SCORING signal via
+  `ingestSignal`). They do not connect; the Phase 4 "no hidden
+  scoring" contract governs (1), and (2) is intentional
+  user-reviewed Phase 3 design. codex Phase 4 r1 conflated them and
+  flagged a false "blocker." Mitigated for v1 by explicit docs in
+  `lib/engagement/ingest.ts`. v1.5: rename one side (e.g. the
+  connector source → `outreach_signal`, or the table →
+  `touch_outcomes`) so the distinction is structural, not just
+  documented. Not a v1 blocker — `lib/engagement/*` provably never
+  writes evidence.
+
 ### Task 3.1: Connector interface
 
 **Files:**

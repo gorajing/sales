@@ -1,6 +1,7 @@
 import { db, schema } from '@/db';
 import { eq, and, sql } from 'drizzle-orm';
 import { newId } from '../id';
+import { isUniqueViolation } from '../db-errors';
 import type { Tier } from '../scoring/rules';
 import type { SignalType } from '@/db/schema';
 import { renderAlertText } from './render';
@@ -86,15 +87,6 @@ const ENGAGEMENT_LIKE_SIGNAL_TYPES = ['intent', 'engagement', 'trigger_event'] a
 // default; a human has to decide whether to include it in this list.
 const _ENGAGEMENT_TYPES_ARE_SIGNAL_TYPES: readonly SignalType[] = ENGAGEMENT_LIKE_SIGNAL_TYPES;
 void _ENGAGEMENT_TYPES_ARE_SIGNAL_TYPES;
-
-function isUniqueViolation(err: unknown): boolean {
-  // UNIQUE / PRIMARY KEY only — FK / NOT NULL / CHECK errors must
-  // propagate. SQLite-specific; see docs/architecture.md "Deployment
-  // assumptions" for what changes when porting to Postgres.
-  const e = err as { code?: string };
-  return e?.code === 'SQLITE_CONSTRAINT_UNIQUE'
-      || e?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
-}
 
 /**
  * Single retry with 50ms backoff for transient SQLite errors on the

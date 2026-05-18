@@ -1,6 +1,7 @@
 import { db, schema } from '@/db';
 import { eq, and } from 'drizzle-orm';
 import { newId } from '../id';
+import { isUniqueViolation } from '../db-errors';
 import {
   parseRoutingRules, evalRoutingPredicate, hashRoutingConfig,
   type RoutingContext,
@@ -32,15 +33,6 @@ export interface RouteResult {
    *  is `routing_rules_hash` for historical reasons; it now covers the
    *  fallback owner too. */
   routingRulesHash: string;
-}
-
-function isUniqueViolation(err: unknown): boolean {
-  // UNIQUE / PRIMARY KEY only — FK / NOT NULL / CHECK errors must propagate.
-  // SQLite-specific; see docs/architecture.md "Deployment assumptions" for
-  // what changes when porting to Postgres.
-  const e = err as { code?: string };
-  return e?.code === 'SQLITE_CONSTRAINT_UNIQUE'
-      || e?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
 }
 
 /**
