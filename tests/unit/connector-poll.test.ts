@@ -218,6 +218,27 @@ describe('pollConnectors — watermark', () => {
     ).toBe('2026-05-16T12:00:00.000Z');
   });
 
+  it('an older poll finishing last does NOT move the watermark backwards (atomic max)', async () => {
+    // The whole point of the r2 atomic-max UPSERT. Seed the watermark
+    // to a NEWER instant, then run a poll whose poll-start is OLDER
+    // (simulating an overlapping older poll committing last). The
+    // stored watermark MUST stay at the newer value — max() in the
+    // single UPSERT statement, not a racy read-then-write.
+    const c = fakeConnector('mono', async () => [validPayload('globex.com', 'm1')]);
+    // Newer poll first → watermark = 2026-05-20.
+    await pollConnectors({ connectors: [c], now: new Date('2026-05-20T00:00:00.000Z') });
+    expect(
+      db.select().from(schemaMod.connectorPollState)
+        .where(eq(schemaMod.connectorPollState.connectorName, 'mono')).get()?.lastPolledAt,
+    ).toBe('2026-05-20T00:00:00.000Z');
+    // Older poll commits last → must NOT regress the watermark.
+    await pollConnectors({ connectors: [c], now: new Date('2026-05-18T00:00:00.000Z') });
+    expect(
+      db.select().from(schemaMod.connectorPollState)
+        .where(eq(schemaMod.connectorPollState.connectorName, 'mono')).get()?.lastPolledAt,
+    ).toBe('2026-05-20T00:00:00.000Z');
+  });
+
   it('explicit `since` overrides the stored watermark (operator backfill)', async () => {
     const seen: Date[] = [];
     const c = fakeConnector('wm', async (since) => {
