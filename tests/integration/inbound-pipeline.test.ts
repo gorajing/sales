@@ -14,6 +14,51 @@ vi.mock('../../lib/claude/run', () => ({
   ClaudeError: class extends Error {},
 }));
 
+// This suite exercises MANY routes. Several read real files: `@/db`'s
+// drizzle migrator reads db/migrations/* (via node:fs's DEFAULT export,
+// left untouched by the spread below) and the recompute route reads
+// data/scoring-rules.md + data/routing-rules.md (NAMED readFileSync).
+// So this mock MUST be a transparent passthrough by default — every
+// non-recompute test must behave exactly as it did against real fs.
+//
+// Only the two "config validation is BEFORE account lookup" tests need
+// a malformed data/routing-rules.md. They flip `fsControl.malformRoutingRules`,
+// which makes the NAMED readFileSync return malformed content for that
+// ONE path for the duration of a single test; scoring-rules.md, the
+// default export, and every other read stay real. This replaces the
+// previous anti-pattern of writeFileSync-ing the real git-tracked
+// data/routing-rules.md: that mutated a file shared by all parallel
+// vitest workers (default pool: 'forks', fileParallelism: true) — it
+// already flaked tests/unit/connector-poll-route.test.ts — and a run
+// SIGKILLed between the corrupt write and the afterEach restore left
+// the developer's working tree dirty. Same selective-mock shape as
+// tests/unit/connector-poll-route.test.ts and tests/unit/alert-dispatch.test.ts.
+//
+// vi.hoisted() is required: vi.mock factories are hoisted above all
+// imports, so the toggle must be hoisted too for the factory closure
+// and the it() blocks to share one reference.
+const fsControl = vi.hoisted(() => ({ malformRoutingRules: false }));
+
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  // Byte-identical to the string the old on-disk approach wrote, so the
+  // route's parseRoutingRules() receives exactly the same malformed
+  // input and the 503 contract these two tests prove is unchanged
+  // (RR1 with only a priority — missing predicate + owner_email — which
+  // lib/routing/rules.ts rejects wholesale with a RoutingRuleParseError).
+  const MALFORMED_ROUTING_MD = '## RR1 — broken\n- priority: 10\n';
+  const readFileSync = ((p: unknown, ...rest: unknown[]) => {
+    if (fsControl.malformRoutingRules && typeof p === 'string') {
+      const norm = p.replace(/\\/g, '/');
+      if (norm === 'data/routing-rules.md' || norm.endsWith('/data/routing-rules.md')) {
+        return MALFORMED_ROUTING_MD;
+      }
+    }
+    return (actual.readFileSync as (...a: unknown[]) => unknown)(p, ...rest);
+  }) as typeof actual.readFileSync;
+  return { ...actual, readFileSync };
+});
+
 vi.mock('@/db', async () => {
   const { default: Database } = await import('better-sqlite3');
   const { drizzle } = await import('drizzle-orm/better-sqlite3');
@@ -78,10 +123,6 @@ afterEach(() => {
 
 import { POST as postSignal } from '../../app/api/signals/route';
 import { POST as postRecompute } from '../../app/api/scoring/recompute/route';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-
-const ROUTING_PATH = resolve(process.cwd(), 'data/routing-rules.md');
 
 function nowIso(): string { return new Date().toISOString(); }
 
@@ -305,14 +346,15 @@ describe('POST /api/scoring/recompute — body cap is bytes-based and streaming'
 });
 
 describe('POST /api/scoring/recompute — config validation is BEFORE account lookup', () => {
-  // Persist a malformed routing-rules.md, ensure the handler returns 503
-  // even when the account doesn't exist AND no lead_scores row is written.
-  // Restoration runs in finally so a test crash doesn't leave a broken file.
-  const ORIGINAL = readFileSync(ROUTING_PATH, 'utf8');
-  afterEach(() => writeFileSync(ROUTING_PATH, ORIGINAL, 'utf8'));
+  // Make the route see a malformed data/routing-rules.md WITHOUT touching
+  // the real git-tracked file: flip the hoisted node:fs toggle (see the
+  // mock at the top of this file). The reset runs in afterEach so it
+  // fires even if the test throws — and because nothing is written to
+  // disk, there is no cross-worker race and nothing to restore.
+  afterEach(() => { fsControl.malformRoutingRules = false; });
 
   it('returns 503 (not 404) when routing-rules.md is malformed and accountId is unknown', async () => {
-    writeFileSync(ROUTING_PATH, '## RR1 — broken\n- priority: 10\n', 'utf8');
+    fsControl.malformRoutingRules = true;
     const rec = await postRecompute(postRec({ accountId: 'acc_missing' }));
     expect(rec.status).toBe(503);
     const body = await rec.json();
@@ -322,7 +364,7 @@ describe('POST /api/scoring/recompute — config validation is BEFORE account lo
   it('writes no leadScore row when routing-rules.md is malformed even if account exists', async () => {
     const { db, schema: s } = await import('@/db');
     db.insert(s.accounts).values({ id: 'acc_real', name: 'Real Co' }).run();
-    writeFileSync(ROUTING_PATH, '## RR1 — broken\n- priority: 10\n', 'utf8');
+    fsControl.malformRoutingRules = true;
     const rec = await postRecompute(postRec({ accountId: 'acc_real' }));
     expect(rec.status).toBe(503);
     // Config validation must fire BEFORE computeScore, so no side effects:
