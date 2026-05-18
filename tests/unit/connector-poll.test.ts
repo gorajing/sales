@@ -122,6 +122,31 @@ describe('pollConnectors — isolation', () => {
     expect(db.select().from(schemaMod.evidence).all()).toHaveLength(1);
   });
 
+  it('isolation holds for a NON-ConnectorError throw (broad catch, not ConnectorError-specific)', async () => {
+    // codex 3.4 r1 blocker context: the per-connector boundary must
+    // catch ANY throw (plain Error, a DB error from the watermark
+    // path, etc.), not just ConnectorError. A connector throwing a
+    // bare Error must still be isolated and the others must proceed.
+    const boom = fakeConnector('boom', async () => {
+      throw new Error('not a ConnectorError');
+    });
+    const good = fakeConnector('good', async () => [validPayload('globex.com', 'g1')]);
+    const r = await pollConnectors({
+      connectors: [boom, good],
+      since: new Date('2026-05-01T00:00:00.000Z'),
+      now: new Date('2026-05-15T00:00:00.000Z'),
+    });
+    const byName = Object.fromEntries(r.connectors.map((c) => [c.connector, c]));
+    expect(byName.boom.ok).toBe(false);
+    expect(byName.boom.error).toMatch(/not a ConnectorError/);
+    expect(byName.good.ok).toBe(true);
+    expect(byName.good.ingested).toBe(1);
+    expect(r.ok).toBe(false);
+    // The good connector's account still flows to recompute even
+    // though a sibling threw a non-typed error.
+    expect(r.affectedAccountIds).toHaveLength(1);
+  });
+
   it('all connectors succeeding → top-level ok:true and affectedAccountIds deduped across connectors', async () => {
     const a = fakeConnector('a', async () => [validPayload('shared.com', 's1')]);
     const b = fakeConnector('b', async () => [validPayload('shared.com', 's2')]);
@@ -288,6 +313,36 @@ describe('recomputeAffectedAccounts', () => {
     const summary = await recomputeAffectedAccounts(['acc_1'], cfg, d);
     expect(summary.succeeded).toBe(1);
     expect(summary.failed).toEqual([]);
+  });
+
+  it('malformed routing-rules.md fails EVERY account WITHOUT calling computeScore (config-before-mutation parity)', async () => {
+    // codex 3.4 r1 BLOCKER: /api/scoring/recompute pre-validates
+    // routing-rules.md before computeScore writes a lead_scores row.
+    // recomputeAffectedAccounts must do the same — a known-bad
+    // routing config must fail all accounts up front, NOT write
+    // score rows then fail on route(). A rule-shaped section whose
+    // heading isn't RR\d+ makes parseRoutingRules throw
+    // RoutingRuleParseError.
+    const badRoutingMd = [
+      '## notarule',
+      '- priority: 1',
+      "- predicate: tier == 'hot'",
+      '- owner_email: x@y.com',
+    ].join('\n');
+    const d = deps();
+    const summary = await recomputeAffectedAccounts(
+      ['acc_1', 'acc_2'],
+      { scoringMd: '# scoring', routingMd: badRoutingMd, defaultOwner: 'a@b.com' },
+      d,
+    );
+    expect(summary.attempted).toBe(2);
+    expect(summary.succeeded).toBe(0);
+    expect(summary.failed.map((f) => f.accountId).sort()).toEqual(['acc_1', 'acc_2']);
+    expect(summary.failed.every((f) => /routing-rules\.md is invalid/.test(f.error))).toBe(true);
+    // The load-bearing assertion: NO score row was written for ANY
+    // account — computeScore was never called.
+    expect(d.computeScore).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
   });
 
   it('one account recompute throwing is isolated; other accounts still recompute', async () => {

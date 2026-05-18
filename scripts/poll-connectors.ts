@@ -67,26 +67,35 @@ async function main(): Promise<number> {
 
   let recompute: RecomputeSummary = { attempted: 0, succeeded: 0, failed: [] };
   if (poll.affectedAccountIds.length > 0) {
+    // A recompute-config problem (bad DEFAULT_OWNER_EMAIL, unreadable
+    // rules files) must NOT discard the structured "poll succeeded,
+    // recompute failed" summary by rejecting main() into the fatal
+    // exit path. Degrade to a reported recompute failure + exit 1,
+    // mirroring the endpoint's resilience (codex 3.4 r1).
     const owner = (process.env.DEFAULT_OWNER_EMAIL ?? '').trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner)) {
-      console.error(
-        `[poll-recompute] DEFAULT_OWNER_EMAIL is missing/invalid; ` +
-        `${poll.affectedAccountIds.length} account(s) ingested but NOT recomputed.`,
-      );
-      recompute = {
-        attempted: poll.affectedAccountIds.length,
-        succeeded: 0,
-        failed: poll.affectedAccountIds.map((accountId) => ({
-          accountId, error: 'DEFAULT_OWNER_EMAIL missing/invalid',
-        })),
-      };
-    } else {
+    try {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner)) {
+        throw new Error('DEFAULT_OWNER_EMAIL missing/invalid');
+      }
       const root = process.cwd();
       const scoringMd = readFileSync(resolve(root, 'data/scoring-rules.md'), 'utf8');
       const routingMd = readFileSync(resolve(root, 'data/routing-rules.md'), 'utf8');
       recompute = await recomputeAffectedAccounts(
         poll.affectedAccountIds, { scoringMd, routingMd, defaultOwner: owner },
       );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(
+        `[poll-recompute] recompute config unavailable (${msg}); ` +
+        `${poll.affectedAccountIds.length} account(s) ingested but NOT recomputed.`,
+      );
+      recompute = {
+        attempted: poll.affectedAccountIds.length,
+        succeeded: 0,
+        failed: poll.affectedAccountIds.map((accountId) => ({
+          accountId, error: `recompute config unavailable: ${msg}`,
+        })),
+      };
     }
   }
   console.log(

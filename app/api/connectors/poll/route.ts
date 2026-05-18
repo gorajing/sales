@@ -107,9 +107,17 @@ export async function POST(req: Request) {
       ];
     }
   } catch (err) {
-    // Connector construction failed (e.g. github-watch.md unparseable).
+    // Connector construction failed (e.g. github-watch.md unparseable,
+    // GITHUB_TOKEN missing for an included github). Log the full
+    // formatError detail server-side; return only the message (no
+    // stack/paths) — same body-vs-logs discipline as
+    // /api/scoring/recompute.
+    console.error('[poll] connector construction failed:', formatError(err));
     return NextResponse.json(
-      { error: 'connector_misconfigured', detail: formatError(err) },
+      {
+        error: 'connector_misconfigured',
+        detail: err instanceof Error ? err.message : String(err),
+      },
       { status: 400 },
     );
   }
@@ -150,11 +158,17 @@ export async function POST(req: Request) {
           poll.affectedAccountIds, { scoringMd, routingMd, defaultOwner },
         );
       } catch (err) {
+        // Rules files unreadable. Log full detail server-side; the
+        // response carries only the message (no stack/paths).
+        console.error('[poll] recompute config unreadable:', formatError(err));
         recompute = {
           attempted: poll.affectedAccountIds.length,
           succeeded: 0,
           failed: poll.affectedAccountIds.map((accountId) => ({
-            accountId, error: `recompute config unavailable: ${formatError(err)}`,
+            accountId,
+            error: `recompute config unavailable: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
           })),
         };
       }
