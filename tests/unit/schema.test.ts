@@ -230,4 +230,58 @@ describe('schema v2 (signals/scoring/routing)', () => {
       }).run()
     ).toThrow();
   });
+
+  // ─── engagement_events (Phase 4.1) — contract invariants ──────────────────
+
+  it('enforces unique engagementEvents.externalId (webhook redelivery dedupe)', () => {
+    const { db } = freshDb();
+    db.insert(schema.engagementEvents).values({
+      id: 'ee_1', eventType: 'opened',
+      occurredAt: '2026-05-06T12:00:00.000Z', externalId: 'sg_dup',
+    }).run();
+    expect(() =>
+      db.insert(schema.engagementEvents).values({
+        id: 'ee_2', eventType: 'opened',
+        occurredAt: '2026-05-06T12:00:00.000Z', externalId: 'sg_dup',
+      }).run()
+    ).toThrow();
+  });
+
+  it('allows multiple NULL externalId (providers without a stable event id)', () => {
+    // The idempotency guarantee only applies WHEN an external id is
+    // present. Two id-less events must both insert (and may double-
+    // count on redelivery — a documented limitation, not a crash).
+    const { db } = freshDb();
+    db.insert(schema.engagementEvents).values({
+      id: 'ee_a', eventType: 'sent', occurredAt: '2026-05-06T12:00:00.000Z',
+    }).run();
+    db.insert(schema.engagementEvents).values({
+      id: 'ee_b', eventType: 'sent', occurredAt: '2026-05-06T12:00:00.000Z',
+    }).run();
+    expect(db.select().from(schema.engagementEvents).all()).toHaveLength(2);
+  });
+
+  it('rejects engagementEvents with NULL occurredAt — no CURRENT_TIMESTAMP default masks a missing required timestamp', () => {
+    // The contract: occurred_at is the upstream event time, required,
+    // normalized to UTC-Z at ingest. The plan draft defaulted it to
+    // CURRENT_TIMESTAMP (wrong format + masks a missing value). This
+    // test pins that the column has NO default and a missing value
+    // fails LOUDLY at the SQL level.
+    const { sqlite } = freshDb();
+    expect(() =>
+      sqlite.prepare(
+        "INSERT INTO engagement_events (id, event_type) VALUES ('ee_x', 'opened')",
+      ).run()
+    ).toThrow();
+  });
+
+  it('enforces FK on engagementEvents.touchId / contactId (no dangling references)', () => {
+    const { db } = freshDb();
+    expect(() =>
+      db.insert(schema.engagementEvents).values({
+        id: 'ee_fk', touchId: 'touch_does_not_exist', eventType: 'replied',
+        occurredAt: '2026-05-06T12:00:00.000Z',
+      }).run()
+    ).toThrow();
+  });
 });

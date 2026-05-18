@@ -325,3 +325,53 @@ export const connectorPollState = sqliteTable('connector_poll_state', {
   // boundary + dedupe_key absorb the resulting small overlap.
   lastPolledAt: text('last_polled_at').notNull(),
 });
+
+// ─── v2 additions: engagement loop (Phase 4) ─────────────────────────────────
+
+/**
+ * Engagement events are FACTS (sent / delivered / opened / clicked /
+ * replied / …) emitted by outreach providers (Outreach, SendGrid),
+ * NOT inferred outcomes and NOT scoring evidence. This table is
+ * deliberately separate from `evidence`: an engagement event never
+ * enters the lead score. It exists only to close the feedback loop —
+ * attribution (Phase 4.3) reads it to compute per-principle reply
+ * rates that become ADVISORY context for the drafter.
+ *
+ * Contract notes (enforced at the ingest boundary, not all at the SQL
+ * level):
+ *   - `externalId` UNIQUE is the webhook-redelivery idempotency key.
+ *     Nullable because some providers don't supply a stable id;
+ *     SQLite allows multiple NULLs under a UNIQUE index, so id-less
+ *     events still insert (and can double-count on redelivery — a
+ *     documented limitation, not a silent one).
+ *   - `touchId` / `contactId` are FK-nullable at the SQL level, but
+ *     `ingestEngagement` REJECTS an event that resolves to neither an
+ *     existing touch nor an existing contact ("attach-or-fail"). An
+ *     orphan event is unattributable noise.
+ *   - `occurredAt` is the upstream event time, ISO-8601 UTC-Z,
+ *     normalized at the ingest boundary (same canonical policy as
+ *     `evidence.captured_at`). Intentionally NO `CURRENT_TIMESTAMP`
+ *     default: it is REQUIRED from the payload, and a wall-clock
+ *     default would (a) be the wrong format (`YYYY-MM-DD HH:MM:SS`,
+ *     no `T`/`Z`/ms) and (b) silently mask a missing required
+ *     timestamp. A missing value must fail loudly.
+ */
+export const engagementEvents = sqliteTable('engagement_events', {
+  id: text('id').primaryKey(),
+  touchId: text('touch_id').references(() => touches.id),
+  contactId: text('contact_id').references(() => contacts.id),
+  eventType: text('event_type', {
+    enum: ['sent', 'delivered', 'opened', 'clicked', 'replied',
+           'bounced', 'unsubscribed', 'meeting_booked'],
+  }).notNull(),
+  metadataJson: text('metadata_json', { mode: 'json' })
+    .$type<Record<string, unknown>>().notNull().default(sql`'{}'`),
+  // Upstream event time, UTC-Z, normalized at ingest. NO default — see
+  // the table doc above for why a CURRENT_TIMESTAMP default is wrong.
+  occurredAt: text('occurred_at').notNull(),
+  // Webhook idempotency key (provider's stable event id). Nullable;
+  // UNIQUE permits multiple NULLs in SQLite.
+  externalId: text('external_id').unique(),
+  createdAt: text('created_at').notNull()
+    .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
+});
