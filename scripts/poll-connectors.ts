@@ -49,12 +49,26 @@ async function main(): Promise<number> {
     since = d;
   }
 
-  const connectors: SignalConnector[] = [
-    new SalesforceConnector(),
-    new HubSpotConnector(),
-    new OutreachConnector(),
-    ...(process.env.GITHUB_TOKEN ? [GitHubConnector.fromEnv()] : []),
-  ];
+  // Connector construction can throw BEFORE polling (e.g.
+  // GITHUB_TOKEN set but data/github-watch.md missing/malformed →
+  // GitHubConnector.fromEnv() throws). That must NOT reject main()
+  // into the fatal exit-3 path — report it as a config failure and
+  // exit 1, mirroring the endpoint's 400 (codex 3.4 r2).
+  let connectors: SignalConnector[];
+  try {
+    connectors = [
+      new SalesforceConnector(),
+      new HubSpotConnector(),
+      new OutreachConnector(),
+      ...(process.env.GITHUB_TOKEN ? [GitHubConnector.fromEnv()] : []),
+    ];
+  } catch (err) {
+    console.error(
+      `[poll] connector construction failed (no connectors polled): ` +
+      `${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 1;
+  }
 
   const poll = await pollConnectors({ connectors, since });
   for (const c of poll.connectors) {
@@ -67,33 +81,31 @@ async function main(): Promise<number> {
 
   let recompute: RecomputeSummary = { attempted: 0, succeeded: 0, failed: [] };
   if (poll.affectedAccountIds.length > 0) {
-    // A recompute-config problem (bad DEFAULT_OWNER_EMAIL, unreadable
-    // rules files) must NOT discard the structured "poll succeeded,
-    // recompute failed" summary by rejecting main() into the fatal
-    // exit path. Degrade to a reported recompute failure + exit 1,
-    // mirroring the endpoint's resilience (codex 3.4 r1).
-    const owner = (process.env.DEFAULT_OWNER_EMAIL ?? '').trim().toLowerCase();
+    // recomputeAffectedAccounts is the single enforcement point for
+    // routing/owner config validity — the script no longer
+    // re-implements the owner check. The only thing that can throw
+    // here is the rules-file READ; catch it so a missing file
+    // degrades to a reported recompute failure + exit 1, NOT the
+    // fatal exit-3 path (codex 3.4 r1/r2).
     try {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(owner)) {
-        throw new Error('DEFAULT_OWNER_EMAIL missing/invalid');
-      }
       const root = process.cwd();
       const scoringMd = readFileSync(resolve(root, 'data/scoring-rules.md'), 'utf8');
       const routingMd = readFileSync(resolve(root, 'data/routing-rules.md'), 'utf8');
+      const defaultOwner = (process.env.DEFAULT_OWNER_EMAIL ?? '').trim().toLowerCase();
       recompute = await recomputeAffectedAccounts(
-        poll.affectedAccountIds, { scoringMd, routingMd, defaultOwner: owner },
+        poll.affectedAccountIds, { scoringMd, routingMd, defaultOwner },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(
-        `[poll-recompute] recompute config unavailable (${msg}); ` +
+        `[poll-recompute] rules files unreadable (${msg}); ` +
         `${poll.affectedAccountIds.length} account(s) ingested but NOT recomputed.`,
       );
       recompute = {
         attempted: poll.affectedAccountIds.length,
         succeeded: 0,
         failed: poll.affectedAccountIds.map((accountId) => ({
-          accountId, error: `recompute config unavailable: ${msg}`,
+          accountId, error: 'recompute config unavailable: rules files unreadable',
         })),
       };
     }

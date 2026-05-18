@@ -345,6 +345,40 @@ describe('recomputeAffectedAccounts', () => {
     expect(d.route).not.toHaveBeenCalled();
   });
 
+  it('an invalid defaultOwner fails EVERY account WITHOUT calling computeScore (same config-before-mutation invariant as routing)', async () => {
+    // codex 3.4 r2 BLOCKER: r1 closed the routing-rules.md drift but
+    // left the SAME drift for defaultOwner — route() validates it and
+    // throws, but only AFTER computeScore wrote a lead_scores row.
+    // recomputeAffectedAccounts must reject a bad owner up front,
+    // zero computeScore calls. This is the parity twin of the
+    // malformed-routing test.
+    const d = deps();
+    const summary = await recomputeAffectedAccounts(
+      ['acc_1', 'acc_2'],
+      { scoringMd: '# scoring', routingMd: '# routing', defaultOwner: 'not-an-email' },
+      d,
+    );
+    expect(summary.succeeded).toBe(0);
+    expect(summary.failed.map((f) => f.accountId).sort()).toEqual(['acc_1', 'acc_2']);
+    expect(summary.failed.every((f) => /DEFAULT_OWNER_EMAIL is invalid/.test(f.error))).toBe(true);
+    expect(d.computeScore).not.toHaveBeenCalled();
+    expect(d.route).not.toHaveBeenCalled();
+  });
+
+  it('a valid owner with surrounding whitespace/case is normalized (matches route() behavior)', async () => {
+    // route() does `.trim().toLowerCase()` then EMAIL_SHAPE. The
+    // pre-check must normalize identically or it would reject a
+    // value route() would accept (false config failure) — pin parity.
+    const d = deps();
+    const summary = await recomputeAffectedAccounts(
+      ['acc_1'],
+      { scoringMd: '# scoring', routingMd: '# routing', defaultOwner: '  Triage@Example.COM  ' },
+      d,
+    );
+    expect(summary.succeeded).toBe(1);
+    expect(d.computeScore).toHaveBeenCalledTimes(1);
+  });
+
   it('one account recompute throwing is isolated; other accounts still recompute', async () => {
     const d = deps({
       computeScore: vi.fn(async (accountId: string) => {

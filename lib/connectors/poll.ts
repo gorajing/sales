@@ -1,9 +1,9 @@
-import { eq } from 'drizzle-orm';
+import { sql, eq } from 'drizzle-orm';
 import { db, schema } from '@/db';
 import { ingestSignal } from '../signals/ingest';
 import { formatError } from '../alerts/http';
 import { computeScore } from '../scoring/score';
-import { route as routeAccount } from '../routing/route';
+import { route as routeAccount, EMAIL_SHAPE } from '../routing/route';
 import { parseRoutingRules, RoutingRuleParseError } from '../routing/rules';
 import { dispatchTierPromotion, dispatchEngagementSpike } from '../alerts/dispatch';
 import type { SignalConnector } from './types';
@@ -110,36 +110,43 @@ function readWatermark(connectorName: string): Date | null {
 }
 
 /**
- * Advance the watermark, MONOTONICALLY. If a stored value already
- * exists that is >= the new instant (two cron fires overlapping and
- * an older poll finishing last), keep the newer stored value rather
- * than moving the watermark backwards. Backwards movement is only a
- * benign extra-refetch (dedupe-safe), but the guard is one comparison
- * and removes pointless churn under the concurrent-poll scenario.
+ * Advance the watermark monotonically, in a SINGLE atomic statement.
+ *
+ * `ON CONFLICT DO UPDATE SET last_polled_at = max(<stored>,
+ * excluded.last_polled_at)` — SQLite evaluates this within the one
+ * UPSERT, so two overlapping polls can't interleave a read and a
+ * write to move the watermark backwards (the racy read-then-write an
+ * earlier version had — codex 3.4 r2). `max()` over TEXT is a
+ * lexical comparison; watermarks are always
+ * `new Date().toISOString()` (fixed-width `…Z`), so lexical order ==
+ * chronological order. Backwards movement was only benign refetch
+ * churn (dedupe-safe), but doing it atomically makes the guarantee
+ * real instead of overstated.
  */
 function advanceWatermark(connectorName: string, pollStartedAtIso: string): void {
-  const existing = readWatermark(connectorName);
-  if (existing && existing.getTime() >= new Date(pollStartedAtIso).getTime()) {
-    return;
-  }
   db.insert(schema.connectorPollState)
     .values({ connectorName, lastPolledAt: pollStartedAtIso })
     .onConflictDoUpdate({
       target: schema.connectorPollState.connectorName,
-      set: { lastPolledAt: pollStartedAtIso },
+      set: {
+        lastPolledAt: sql`max(connector_poll_state.last_polled_at, excluded.last_polled_at)`,
+      },
     })
     .run();
 }
 
 /**
- * Poll ONE connector through its entire lifecycle. This function
- * NEVER throws — every failure (watermark read DB error, fetchSince
- * throw, per-payload ingest throw, watermark advance DB error,
- * formatting) is caught and folded into the returned
- * `PerConnectorResult`. That total-isolation guarantee is what makes
- * `pollConnectors`'s loop unable to let one connector abort the
- * others (codex 3.4 r1 blocker: the watermark calls were previously
- * outside the per-connector boundary).
+ * Poll ONE connector through its entire lifecycle. Designed not to
+ * throw: every expected failure (watermark read DB error, fetchSince
+ * throw, per-payload ingest throw, watermark advance DB error) is
+ * caught and folded into the returned `PerConnectorResult`. The only
+ * theoretical escape is the error logger/formatter itself throwing
+ * inside the catch (formatError is cycle/depth-safe by construction,
+ * so this is practically unreachable). `pollConnectors` ALSO wraps
+ * the call defensively, so the loop-level "one connector cannot
+ * abort the others" guarantee is unconditional regardless
+ * (codex 3.4 r1 blocker: watermark calls were previously outside the
+ * per-connector boundary; r2: made the guarantee absolute).
  *
  * `affected` accounts are collected as ingestion happens and returned
  * even on a later failure — an account that got evidence must be
@@ -238,13 +245,26 @@ export async function pollConnectors(opts: PollConnectorsOptions): Promise<PollS
   const affected = new Set<string>();
 
   for (const connector of opts.connectors) {
-    // pollOne never throws — the loop structurally cannot be aborted
-    // by one connector.
-    const { result, affected: connectorAffected } = await pollOne(
-      connector, opts.since, pollStartedAt,
-    );
-    results.push(result);
-    for (const id of connectorAffected) affected.add(id);
+    // Defensive outer wrapper: pollOne is designed not to throw, but
+    // wrapping its call too makes "one connector cannot abort the
+    // others" an UNCONDITIONAL guarantee — even a hypothetical
+    // pollOne bug (or a throw from its own catch-block logger)
+    // becomes that connector's ok:false, never a loop abort.
+    try {
+      const { result, affected: connectorAffected } = await pollOne(
+        connector, opts.since, pollStartedAt,
+      );
+      results.push(result);
+      for (const id of connectorAffected) affected.add(id);
+    } catch (err) {
+      results.push({
+        connector: connector.name,
+        ok: false,
+        since: new Date(pollStartedAt.getTime() - DEFAULT_LOOKBACK_MS).toISOString(),
+        fetched: 0, ingested: 0, deduped: 0, failed: 0,
+        error: safeMessage(err),
+      });
+    }
   }
 
   return {
@@ -297,26 +317,36 @@ export async function recomputeAffectedAccounts(
   deps: RecomputeDeps = realRecomputeDeps,
 ): Promise<RecomputeSummary> {
   // CONFIG-BEFORE-MUTATION invariant — parity with
-  // /api/scoring/recompute step 7. Validate routing-rules.md ONCE up
-  // front; if it's malformed, fail EVERY account WITHOUT calling
-  // computeScore for any (computeScore writes a lead_scores row, so
-  // running it before a known-bad routing config would leave dangling
-  // score rows with no assignment). codex 3.4 r1 blocker: the earlier
-  // version wrote scores then failed on bad routing — real drift from
-  // the route, not just an HTTP status difference.
-  try {
-    parseRoutingRules(cfg.routingMd);
-  } catch (err) {
-    if (err instanceof RoutingRuleParseError) {
-      return {
-        attempted: accountIds.length,
-        succeeded: 0,
-        failed: accountIds.map((accountId) => ({
-          accountId, error: 'routing-rules.md is invalid',
-        })),
-      };
+  // /api/scoring/recompute. computeScore writes a lead_scores row, so
+  // ANY known-bad recompute config must fail EVERY account up front,
+  // with ZERO computeScore calls — otherwise a config failure leaves
+  // dangling score rows with no assignment. This helper is the
+  // SINGLE enforcement point for the whole invariant (routing rules
+  // AND default owner); callers (endpoint, scheduler) do NOT each
+  // re-implement the check — that caller-duplicated-invariant shape
+  // is the drift bug class. codex 3.4 r1 closed routing; r2 caught
+  // that defaultOwner had the SAME drift (route() validates it and
+  // throws, but only AFTER computeScore already wrote the row).
+  const configError = ((): string | null => {
+    try {
+      parseRoutingRules(cfg.routingMd);
+    } catch (err) {
+      if (err instanceof RoutingRuleParseError) return 'routing-rules.md is invalid';
+      throw err; // unexpected parser bug — propagate, don't mask
     }
-    throw err; // unexpected parser bug — propagate, don't mask
+    // Mirror route()'s own normalization + EMAIL_SHAPE check (the
+    // shared regex is exported from lib/routing/route.ts so this
+    // can't drift from what route() actually enforces).
+    const owner = cfg.defaultOwner.trim().toLowerCase();
+    if (!EMAIL_SHAPE.test(owner)) return 'DEFAULT_OWNER_EMAIL is invalid';
+    return null;
+  })();
+  if (configError) {
+    return {
+      attempted: accountIds.length,
+      succeeded: 0,
+      failed: accountIds.map((accountId) => ({ accountId, error: configError })),
+    };
   }
 
   const failed: RecomputeSummary['failed'] = [];

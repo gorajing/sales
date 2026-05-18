@@ -41,8 +41,6 @@ import type { SignalConnector } from '@/lib/connectors/types';
 const KNOWN_CONNECTORS = ['github', 'salesforce', 'hubspot', 'outreach'] as const;
 type KnownConnector = (typeof KNOWN_CONNECTORS)[number];
 
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 /** Build a connector by name. github is constructed only when its
  *  token is present (fromEnv throws otherwise). */
 function buildConnector(name: KnownConnector): SignalConnector {
@@ -135,43 +133,32 @@ export async function POST(req: Request) {
   if (poll.affectedAccountIds.length === 0) {
     recompute = { attempted: 0, succeeded: 0, failed: [] };
   } else {
-    const cfgError = ((): string | null => {
-      const owner = (process.env.DEFAULT_OWNER_EMAIL ?? '').trim().toLowerCase();
-      if (!EMAIL_SHAPE.test(owner)) return 'DEFAULT_OWNER_EMAIL must be a valid email';
-      return null;
-    })();
-    if (cfgError) {
+    try {
+      // recomputeAffectedAccounts is the SINGLE enforcement point for
+      // the config-before-mutation invariant (routing-rules.md AND
+      // defaultOwner). The endpoint no longer re-implements the owner
+      // check — it just hands the config in; a bad routing/owner
+      // comes back as a failed summary, not a thrown error and not a
+      // dangling lead_scores row. The only thing that can throw here
+      // is the rules-file READ (ENOENT) — caught below with a
+      // GENERIC detail (no path leak; full detail logged
+      // server-side), matching /api/scoring/recompute's discipline.
+      const root = process.cwd();
+      const scoringMd = readFileSync(resolve(root, 'data/scoring-rules.md'), 'utf8');
+      const routingMd = readFileSync(resolve(root, 'data/routing-rules.md'), 'utf8');
+      const defaultOwner = (process.env.DEFAULT_OWNER_EMAIL ?? '').trim().toLowerCase();
+      recompute = await recomputeAffectedAccounts(
+        poll.affectedAccountIds, { scoringMd, routingMd, defaultOwner },
+      );
+    } catch (err) {
+      console.error('[poll] recompute rules files unreadable:', formatError(err));
       recompute = {
         attempted: poll.affectedAccountIds.length,
         succeeded: 0,
         failed: poll.affectedAccountIds.map((accountId) => ({
-          accountId, error: `recompute config unavailable: ${cfgError}`,
+          accountId, error: 'recompute config unavailable: rules files unreadable',
         })),
       };
-    } else {
-      try {
-        const root = process.cwd();
-        const scoringMd = readFileSync(resolve(root, 'data/scoring-rules.md'), 'utf8');
-        const routingMd = readFileSync(resolve(root, 'data/routing-rules.md'), 'utf8');
-        const defaultOwner = (process.env.DEFAULT_OWNER_EMAIL ?? '').trim().toLowerCase();
-        recompute = await recomputeAffectedAccounts(
-          poll.affectedAccountIds, { scoringMd, routingMd, defaultOwner },
-        );
-      } catch (err) {
-        // Rules files unreadable. Log full detail server-side; the
-        // response carries only the message (no stack/paths).
-        console.error('[poll] recompute config unreadable:', formatError(err));
-        recompute = {
-          attempted: poll.affectedAccountIds.length,
-          succeeded: 0,
-          failed: poll.affectedAccountIds.map((accountId) => ({
-            accountId,
-            error: `recompute config unavailable: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          })),
-        };
-      }
     }
   }
 

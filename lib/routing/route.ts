@@ -43,7 +43,16 @@ function isUniqueViolation(err: unknown): boolean {
       || e?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
 }
 
-const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+/**
+ * The owner-email shape `route()` enforces. Exported so the
+ * connector poll path (`recomputeAffectedAccounts`) can pre-validate
+ * the default owner with the EXACT same rule BEFORE computeScore
+ * writes a lead_scores row — preserving the config-before-mutation
+ * invariant without a drifting copy. `route()` re-validates as
+ * defense-in-depth; the pre-check just moves the failure earlier so
+ * a bad owner doesn't leave a dangling score row.
+ */
+export const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /**
  * Compute and persist the owner assignment for a given (account, score) pair
