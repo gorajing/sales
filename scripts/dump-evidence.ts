@@ -11,9 +11,14 @@
  * `verify-application.ts` enforces on citations). Output lands in
  * gitignored `application/` — private by default.
  *
- * Exit: 0 on success; non-zero on bad usage / unknown account /
- * write failure, so a packaging script doesn't proceed on a silently
- * empty pack.
+ * Exit codes: 2 = bad usage, 1 = unknown account / write failure,
+ * 0 = wrote the pack. The 0-verified-rows case is deliberately exit 0
+ * (a loud WARNING, not a failure): an account may legitimately have
+ * no audited evidence yet — a research/audit gap, not a dump-evidence
+ * fault. This script is NOT the gate. The hard stop is
+ * `verify-application.ts`, which FAILS CLOSED if the cover letter
+ * cites nothing or cites an id no `verified` row backs — so exiting 0
+ * on an empty pack here cannot smuggle an unbacked claim downstream.
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs';

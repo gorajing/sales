@@ -6,6 +6,7 @@ import {
   COVER_LETTER_MIN_WORDS,
   COVER_LETTER_MAX_WORDS,
 } from '../../lib/application/verify';
+import { newId } from '../../lib/id';
 
 /**
  * The Phase 6 pre-submit gate. Its whole purpose is to make
@@ -41,6 +42,18 @@ describe('extractCitedEvidenceIds', () => {
     const text = 'The evidence is everywhere; ev_ and ev_short and ev_2026 are not ids.';
     expect(extractCitedEvidenceIds(text)).toEqual([]);
   });
+
+  it('round-trips a REAL newId("evidence") — id-format drift fails loud here', () => {
+    // The gate's pattern is single-sourced from newId via idRegExp.
+    // If newId's construction ever drifts (suffix length/charset, date
+    // width) without idRegExp tracking it, a freshly-minted id stops
+    // being recognized — in production that is a silently-missed
+    // unbacked citation. This pins the round-trip so the drift fails
+    // HERE, loudly, instead of there, silently.
+    const id = newId('evidence');
+    const text = `The target's ARR doubled last year, per ${id}.`;
+    expect(extractCitedEvidenceIds(text)).toEqual([id]);
+  });
 });
 
 describe('verifyApplication — evidence-citation gate (fails closed)', () => {
@@ -58,6 +71,35 @@ describe('verifyApplication — evidence-citation gate (fails closed)', () => {
     });
     expect(r.ok).toBe(true);
     expect(r.problems).toEqual([]);
+    expect(r.citedIds).toEqual([VERIFIED, VERIFIED_2]);
+  });
+
+  it('REPORTS malformed evidence rows instead of crashing on them', () => {
+    // evidence-pack.json is external JSON and the IO shell only
+    // array-checks `evidence`. A null / shape-broken row must be
+    // reported as ONE problem, not throw — a throw would fail closed
+    // but on the first bad row, hiding every other problem and
+    // breaking the "report all problems in one pass" contract. The
+    // well-formed rows are still honored, so the malformed-row report
+    // is the ONLY problem here.
+    const r = verifyApplication({
+      coverLetter: baseCover, // cites VERIFIED + VERIFIED_2
+      pack: {
+        account: { id: 'acc_x' },
+        evidence: [
+          null,                                            // not an object
+          { id: 123, extractionStatus: 'verified' },       // non-string id
+          { id: VERIFIED },                                // missing status
+          { id: VERIFIED, extractionStatus: 'verified' },  // good
+          { id: VERIFIED_2, extractionStatus: 'verified' },// good
+        ],
+      },
+      presentFiles: ALL_FILES,
+    });
+    expect(r.problems).toEqual([
+      expect.stringMatching(/3 malformed evidence row\(s\)/i),
+    ]);
+    expect(r.ok).toBe(false);
     expect(r.citedIds).toEqual([VERIFIED, VERIFIED_2]);
   });
 

@@ -6,10 +6,16 @@
  *
  * Reads the gitignored `application/` directory and enforces the
  * mechanical floor (structural completeness + every cover-letter
- * evidence citation backed by a `verified` row + length bounds) via
+ * evidence CITATION backed by a `verified` row + length bounds) via
  * the pure `lib/application/verify.ts`. It does NOT judge prose
- * quality or whether to submit — that is the human's call. It only
- * makes "no unbacked claim ships" FAIL CLOSED.
+ * quality or whether to submit — that is the human's call.
+ *
+ * Precise guarantee (do not overstate it): this makes a
+ * cited-but-unbacked / cited-but-unverified claim FAIL CLOSED. It
+ * canNOT make an UNCITED factual claim fail closed — "this sentence
+ * is an unbacked factual claim" is not mechanically decidable and is
+ * a HUMAN-owned review step. PASS therefore means "mechanical floor
+ * cleared", explicitly NOT "every claim about the target is backed".
  *
  * Exit: 0 iff the package passes every check; 1 otherwise (with all
  * problems listed). Intended to gate the final
@@ -66,8 +72,17 @@ function main(): number {
 
   if (all.length === 0) {
     console.log(
-      `[verify-application] PASS — package complete; ` +
-      `${result.citedIds.length} evidence citation(s), all verified.`,
+      `[verify-application] PASS — mechanical floor cleared: package ` +
+      `complete; ${result.citedIds.length} evidence citation(s), every ` +
+      `one backed by a verified row; length in band.`,
+    );
+    console.log(
+      `[verify-application] NOTE: this proves only that the ids the ` +
+      `letter CITES are verified. It does NOT prove every factual claim ` +
+      `carries a citation — an UNCITED claim is invisible to this gate. ` +
+      `Re-read the letter and confirm each claim about the target rests ` +
+      `on one of the ${result.citedIds.length} cited, verified id(s) ` +
+      `before you submit. Passing is necessary, not sufficient.`,
     );
     return 0;
   }
