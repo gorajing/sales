@@ -186,7 +186,7 @@ describe('verifyApplication — evidence-citation gate (fails closed)', () => {
     expect(long.problems.join(' ')).toMatch(/word count|too long|length/i);
   });
 
-  it('FAILS a cover letter that cites NO evidence at all (the proof claim is unbacked)', () => {
+  it('FAILS a cover letter that cites NO evidence ids (>=1 verified citation is the floor)', () => {
     const r = verifyApplication({
       coverLetter: words(600),  // no ev_ ids
       pack: pack([{ id: VERIFIED, extractionStatus: 'verified' }]),

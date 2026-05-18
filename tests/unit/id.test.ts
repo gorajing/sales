@@ -15,12 +15,16 @@ describe('newId', () => {
 });
 
 describe('isId', () => {
-  it('round-trips every newId kind (drift between newId and isId fails loud)', () => {
-    // ID_BODY is the single source for both newId and isId. If either
-    // drifts without the other this fails HERE — not as a
-    // silently-rejected real id (alert ack) or a silently-missed
-    // citation (Phase 6 gate) in production. Looped because the hex
-    // suffix is random (charset coverage).
+  it('round-trips every newId kind through isId', () => {
+    // ID_BODY single-sources the id shape (newId construction,
+    // idRegExp, isId). Honest scope of this round-trip: it makes
+    // INDEPENDENT NARROWING drift loud — if one side gets stricter, a
+    // freshly generated id stops validating and this fails on
+    // iteration 1. It does NOT prove the converse: LOCKSTEP drift
+    // (newId and ID_BODY widened the same way) still round-trips
+    // green, and charset ([0-9a-f]) coverage is only probabilistic
+    // per random suffix — made near-certain, not proven, by the
+    // loop. Same honesty caveat as the Phase 6 extractor test.
     for (const kind of [
       'account', 'evidence', 'alert', 'touchRevision', 'engagementEvent',
     ] as const) {

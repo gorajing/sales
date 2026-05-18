@@ -174,8 +174,10 @@ export function verifyApplication(input: VerifyInput): VerifyResult {
   }
   if (citedIds.length === 0) {
     problems.push(
-      'cover letter cites NO evidence ids — the "every claim traces to ' +
-      'verified evidence" proof claim is itself unbacked',
+      'cover letter cites NO evidence ids — the mechanical floor ' +
+      'requires at least one cited id that resolves to a verified row ' +
+      '(a letter that cites nothing gives this gate no citation to ' +
+      'check)',
     );
   }
   for (const id of citedIds) {
