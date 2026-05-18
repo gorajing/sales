@@ -100,6 +100,22 @@ export function parsePrincipleIds(md: string): string[] {
   return ids;
 }
 
+/**
+ * Parse a critique timestamp to epoch ms, treating the bare SQLite
+ * `CURRENT_TIMESTAMP` format (`YYYY-MM-DD HH:MM:SS`, which SQLite
+ * emits in UTC) as UTC — `new Date()` would otherwise read it as
+ * LOCAL time and mis-order it against ISO `…Z` rows (codex Phase 4.3
+ * r1 blocker). ISO-8601 strings pass straight through. Unparseable →
+ * NaN (sorts last via the `dt !== 0` guard, deterministic).
+ */
+function parseTs(s: string): number {
+  // Bare SQLite space-format, no offset → it's UTC; make that explicit.
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s)) {
+    return new Date(s.replace(' ', 'T') + 'Z').getTime();
+  }
+  return new Date(s).getTime();
+}
+
 function loadPrincipleIdsFromDisk(): string[] {
   const path = resolve(process.cwd(), 'data/principles.md');
   if (!existsSync(path)) return [];
@@ -121,17 +137,36 @@ export async function computePrincipleOutcomes(
     : loadPrincipleIdsFromDisk();
   if (ALL.length === 0) return [];
 
-  // Which touches received a reply outcome event.
-  const repliedTouches = new Set<string>(
-    db.select().from(schema.engagementEvents)
-      .where(eq(schema.engagementEvents.eventType, 'replied'))
-      .all()
+  // OBSERVABLE POPULATION = touches that have ≥1 engagement event.
+  // codex Phase 4.3 r1 blocker: an earlier version used every touch
+  // with a currentRevisionId as a denominator — including
+  // drafted-but-never-SENT touches, which became fake "silent"
+  // non-observations and could push a principle to "sufficient" off
+  // unsent drafts. A reply (or any provider event) only exists for a
+  // touch that actually went out, so engagement-event presence IS
+  // the ground-truth "sent & observed" marker. (touches.status/sentAt
+  // exist but NO v1 code path sets them — using them would make the
+  // denominator permanently empty; engagement-event presence is the
+  // honest, data-grounded population. v1.5: a real sent-revision
+  // marker.)
+  //
+  // POSITIVE outcome = 'replied' OR 'meeting_booked'. A booked
+  // meeting is an unambiguous (and stronger) positive than a reply;
+  // counting it as "silent" (codex would-improve) would under-count
+  // real wins. The preamble states this definition explicitly.
+  const allEvents = db.select().from(schema.engagementEvents).all();
+  const observableTouches = new Set<string>(
+    allEvents.map((e) => e.touchId).filter((x): x is string => !!x),
+  );
+  const positiveTouches = new Set<string>(
+    allEvents
+      .filter((e) => e.eventType === 'replied' || e.eventType === 'meeting_booked')
       .map((e) => e.touchId)
       .filter((x): x is string => !!x),
   );
 
   const touches = db.select().from(schema.touches).all()
-    .filter((t) => t.currentRevisionId !== null);
+    .filter((t) => t.currentRevisionId !== null && observableTouches.has(t.id));
   const coachCritiques = db.select().from(schema.critiques)
     .where(eq(schema.critiques.criticName, 'sales_coach')).all();
 
@@ -155,27 +190,37 @@ export async function computePrincipleOutcomes(
   for (const t of touches) {
     const candidates = byRevision.get(t.currentRevisionId!);
     if (!candidates || candidates.length === 0) continue;
-    // Deterministic latest: parse timestamps (SQLite "YYYY-MM-DD
-    // HH:MM:SS" vs ISO "…Z" don't sort lexicographically the same),
-    // tie-break on id desc.
+    // codex Phase 4.3 r1 blocker: `new Date('YYYY-MM-DD HH:MM:SS')`
+    // (SQLite CURRENT_TIMESTAMP, which is UTC) is parsed by JS as
+    // LOCAL time, while ISO '…Z' rows parse as UTC — mixed rows
+    // sorted wrong → replies attributed to the wrong pass/fail set.
+    // `parseTs` normalizes the bare SQLite space-format to UTC before
+    // comparing. Same-instant ties fall back to a DETERMINISTIC (not
+    // chronological — newId has a random suffix, no monotonic field)
+    // id compare: a re-critique within the same second is
+    // pathological; stable-and-reproducible is the achievable goal
+    // (v1.5: monotonic critique ordering).
     const latest = [...candidates].sort((a, b) => {
-      const dt = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      const dt = parseTs(b.createdAt) - parseTs(a.createdAt);
       return dt !== 0 ? dt : b.id.localeCompare(a.id);
     })[0];
-    const didReply = repliedTouches.has(t.id);
-    const failed = new Set<string>(
+    const responded = positiveTouches.has(t.id);
+    const flagged = new Set<string>(
       latest.findingsJson
         .map((f) => f.principle_id)
         .filter((x): x is string => !!x),
     );
     for (const pid of ALL) {
       const o = counts[pid];
-      if (failed.has(pid)) {
+      if (flagged.has(pid)) {
         o.failed_total++;
-        if (didReply) o.failed_replied++; else o.failed_silent++;
+        if (responded) o.failed_replied++; else o.failed_silent++;
       } else {
+        // "not flagged" — NOT an explicit pass. Includes principles
+        // the coach never evaluated. The render labels honour this
+        // (no-finding vs flagged) and the preamble states the caveat.
         o.passed_total++;
-        if (didReply) o.passed_replied++; else o.passed_silent++;
+        if (responded) o.passed_replied++; else o.passed_silent++;
       }
     }
   }
@@ -205,9 +250,14 @@ export async function computePrincipleOutcomes(
  * is the thing standing between "descriptive correlation over a
  * controlled sample" and the drafter treating it as ground truth.
  */
-export function renderOutcomesMarkdown(outcomes: PrincipleOutcome[]): string {
+export function renderOutcomesMarkdown(
+  outcomes: PrincipleOutcome[],
+  generatedAt: Date = new Date(),
+): string {
   const lines = [
     '# Principle outcomes (ADVISORY)',
+    '',
+    `Generated: ${generatedAt.toISOString()}`,
     '',
     // Each disclaimer is a single self-contained line on purpose:
     // this preamble is the load-bearing guard between "descriptive
@@ -216,10 +266,15 @@ export function renderOutcomesMarkdown(outcomes: PrincipleOutcome[]): string {
     'Advisory only. This is descriptive correlation, NOT causation, and NOT a score input.',
     'It is NOT auto-applied to data/principles.md; the drafter reads it as advisory context, not instruction.',
     'A correlation here is a prompt to investigate, never a verdict — reply behaviour has many causes.',
-    `Principles below ${MIN_SAMPLE} touches in EITHER arm (passed / failed) show "insufficient data", not a misleading percentage.`,
+    `Population = SENT touches only (those with ≥1 engagement event); drafted-but-unsent touches are excluded.`,
+    `Positive outcome = a 'replied' OR 'meeting_booked' event for the touch. All other observed touches are "silent".`,
+    `"no-finding" = the latest Sales-Coach critique did NOT flag this principle. This INCLUDES principles the critic`,
+    `never evaluated (it records findings, not explicit per-principle passes) — so "no-finding" is NOT an explicit`,
+    `pass. v1.5 will persist explicit verdicts. "flagged" = the latest critique raised a finding for this principle.`,
+    `Principles below ${MIN_SAMPLE} touches in EITHER arm (no-finding / flagged) show "insufficient data", not a misleading percentage.`,
     'Insufficient data means we decline to report — NOT that the principle has no effect.',
     '',
-    '| Principle | n(pass) | reply%(pass) | n(fail) | reply%(fail) | fail_lift |',
+    '| Principle | n(no-finding) | reply%(no-finding) | n(flagged) | reply%(flagged) | flagged_lift |',
     '|---|---|---|---|---|---|',
   ];
   for (const o of outcomes) {
@@ -233,9 +288,23 @@ export function renderOutcomesMarkdown(outcomes: PrincipleOutcome[]): string {
     }
     const pp = Math.round(100 * o.passed_replied / o.passed_total);
     const fp = Math.round(100 * o.failed_replied / o.failed_total);
+    // codex Phase 4.3 r1 would-improve: when the no-finding arm has
+    // ZERO replies but the flagged arm has some, the ratio is
+    // mathematically undefined — but that's the STRONGEST possible
+    // inverse signal (this principle's presence may HURT), not "no
+    // data". Render it as an explicit investigate callout, never a
+    // bland "n/a" that hides it.
+    let liftCell: string;
+    if (o.fail_lift !== null) {
+      liftCell = o.fail_lift.toFixed(2);
+    } else if (o.passed_replied === 0 && o.failed_replied > 0) {
+      liftCell = 'no-finding arm 0% — strong inverse, investigate';
+    } else {
+      liftCell = 'n/a (no replies in either arm)';
+    }
     lines.push(
       `| ${o.principle_id} | ${o.passed_total} | ${pp}% | ` +
-      `${o.failed_total} | ${fp}% | ${o.fail_lift?.toFixed(2) ?? 'n/a'} |`,
+      `${o.failed_total} | ${fp}% | ${liftCell} |`,
     );
   }
   return lines.join('\n');

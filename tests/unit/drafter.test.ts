@@ -63,6 +63,33 @@ describe('draftTouch', () => {
     expect(touch.currentRevisionId).toBe(revisionId);
   });
 
+  it('wires principle-outcomes into the prompt as an ADVISORY block (Phase 4.4 — context, not instruction)', async () => {
+    // codex Phase 4.3 r1 coverage gap: nothing asserted the new
+    // advisory block reaches the drafter prompt. The heading is
+    // emitted unconditionally by draft.ts regardless of whether the
+    // nightly digest file exists, so this is deterministic. The
+    // contract point is that outcomes arrive FRAMED as advisory
+    // context — the heading carries that framing into the prompt.
+    let captured = '';
+    const fakeSpawn = vi.fn().mockImplementation(async ({ prompt }: { prompt: string }) => {
+      captured = prompt;
+      return {
+        subject: 'Saw your data role',
+        body: 'Saw you are hiring a VP of Data. Curious what prompted it.',
+        channel: 'email',
+        cited_evidence_ids: ['ev_1'],
+        supporting_spans: [{ evidence_id: 'ev_1', span: 'hiring a VP of Data', claim: 'Saw you are hiring a VP of Data.' }],
+        rationale: 'Lead with specific observation from ev_1.',
+      };
+    });
+    await draftTouch({ touchId: 'to_1' }, fakeSpawn as any);
+    expect(captured).toContain('Principle outcomes (advisory)');
+    // It is positioned as context, never as the directive — the
+    // Principles block (the actual instruction) precedes it.
+    expect(captured.indexOf('Principles'))
+      .toBeLessThan(captured.indexOf('Principle outcomes (advisory)'));
+  });
+
   it('retries once with correction when spans invalid, returns issues if still invalid', async () => {
     const fakeSpawn = vi.fn()
       .mockResolvedValueOnce({

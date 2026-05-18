@@ -41,10 +41,13 @@ beforeEach(() => {
 });
 
 /**
- * Make a touch whose CURRENT revision has a single latest sales_coach
- * critique that FAILED `principleFailed` (everything else passed by
- * the "absence of failure → pass" inference) and optionally received
- * a `replied` outcome event.
+ * Make a SENT touch (a baseline 'sent' engagement event makes it
+ * observable — the denominator is sent touches only) whose current
+ * revision has a single latest sales_coach critique flagging
+ * `principleFailed` (every other principle "no-finding" by the
+ * documented inference). When `replied`, also emit a 'replied'
+ * outcome event. A touch with NO engagement events would be
+ * unobservable (drafted-but-unsent) and correctly excluded.
  */
 function makeTouch(
   principleFailed: string[],
@@ -74,12 +77,46 @@ function makeTouch(
     })),
     createdAt: critiqueAt,
   }).run();
+  // Baseline 'sent' event → the touch is observable (it went out).
+  db.insert(schemaMod.engagementEvents).values({
+    id: newId('engagementEvent'), touchId, contactId: null,
+    eventType: 'sent', occurredAt: '2026-05-06T11:00:00.000Z',
+  }).run();
   if (replied) {
     db.insert(schemaMod.engagementEvents).values({
       id: newId('engagementEvent'), touchId, contactId: null,
       eventType: 'replied', occurredAt: '2026-05-06T12:00:00.000Z',
     }).run();
   }
+  return touchId;
+}
+
+/** A drafted-but-UNSENT touch: critique exists, but NO engagement
+ *  event, so it must NOT count toward any denominator. */
+function makeUnsentTouch(principleFailed: string[]): string {
+  const accountId = newId('account');
+  db.insert(schemaMod.accounts).values({ id: accountId, name: 'X' }).run();
+  const sequenceId = newId('sequence');
+  db.insert(schemaMod.sequences).values({ id: sequenceId, accountId }).run();
+  const touchId = newId('touch');
+  db.insert(schemaMod.touches).values({
+    id: touchId, sequenceId, position: 1, channel: 'email',
+  }).run();
+  const revId = newId('touchRevision');
+  db.insert(schemaMod.touchRevisions).values({
+    id: revId, touchId, revisionNumber: 1, body: 'x', createdBy: 'drafter',
+  }).run();
+  db.update(schemaMod.touches).set({ currentRevisionId: revId })
+    .where(eq(schemaMod.touches.id, touchId)).run();
+  db.insert(schemaMod.critiques).values({
+    id: newId('critique'), touchRevisionId: revId,
+    criticName: 'sales_coach',
+    verdict: principleFailed.length > 0 ? 'revise' : 'pass',
+    findingsJson: principleFailed.map((pid) => ({
+      issue: 'x', quote: '', suggested_rewrite: null, principle_id: pid,
+    })),
+    createdAt: '2020-01-01T00:00:00.000Z',
+  }).run();
   return touchId;
 }
 
@@ -187,6 +224,57 @@ describe('computePrincipleOutcomes — sample-size guardrail', () => {
 });
 
 // --------------------------------------------------------------------------
+// Observable population & attribution robustness (codex 4.3 r1 blockers)
+// --------------------------------------------------------------------------
+
+describe('computePrincipleOutcomes — observable population', () => {
+  it('EXCLUDES drafted-but-unsent touches from the denominator (no fabricated silent rows)', async () => {
+    // 1 SENT touch failing P5 (replied) + many UNSENT drafts failing
+    // P5. The unsent drafts must NOT inflate failed_total or push P5
+    // toward "sufficient" — only the sent touch is observable.
+    makeTouch(['P5'], true);
+    for (let i = 0; i < MIN_SAMPLE + 5; i++) makeUnsentTouch(['P5']);
+    const p5 = (await computePrincipleOutcomes(PRINCIPLES))
+      .find((o) => o.principle_id === 'P5')!;
+    expect(p5.failed_total).toBe(1);     // ONLY the sent touch
+    expect(p5.sufficient).toBe(false);   // unsent drafts didn't count
+  });
+
+  it("counts 'meeting_booked' as a positive outcome, not silent", async () => {
+    const touchId = makeTouch(['P5'], false);  // sent, no reply
+    db.insert(schemaMod.engagementEvents).values({
+      id: newId('engagementEvent'), touchId, contactId: null,
+      eventType: 'meeting_booked', occurredAt: '2026-05-06T13:00:00.000Z',
+    }).run();
+    const p5 = (await computePrincipleOutcomes(PRINCIPLES))
+      .find((o) => o.principle_id === 'P5')!;
+    expect(p5.failed_total).toBe(1);
+    expect(p5.failed_replied).toBe(1);   // meeting_booked = positive
+    expect(p5.failed_silent).toBe(0);
+  });
+
+  it('picks the latest critique correctly across mixed SQLite-space and ISO-Z timestamps (UTC)', async () => {
+    // First critique flags P5 at a SQLite-format UTC time that is
+    // CHRONOLOGICALLY LATER than the ISO-Z second critique, but whose
+    // naive local-time parse could look earlier. The flagged-P5 one
+    // must win → P5 flagged.
+    const touchId = makeTouch([], true, '2020-01-01T00:00:00.000Z'); // baseline pass critique (ISO)
+    const rev = db.select().from(schemaMod.touchRevisions)
+      .where(eq(schemaMod.touchRevisions.touchId, touchId)).get()!;
+    db.insert(schemaMod.critiques).values({
+      id: newId('critique'), touchRevisionId: rev.id,
+      criticName: 'sales_coach', verdict: 'revise',
+      findingsJson: [{ issue: 'x', quote: '', suggested_rewrite: null, principle_id: 'P5' }],
+      createdAt: '2026-05-06 12:00:00',  // SQLite UTC space-format, far later
+    }).run();
+    const p5 = (await computePrincipleOutcomes(PRINCIPLES))
+      .find((o) => o.principle_id === 'P5')!;
+    expect(p5.failed_total).toBe(1);  // the later SQLite-format critique won
+    expect(p5.passed_total).toBe(0);
+  });
+});
+
+// --------------------------------------------------------------------------
 // renderOutcomesMarkdown — must not look more scientific than it is
 // --------------------------------------------------------------------------
 
@@ -216,5 +304,40 @@ describe('renderOutcomesMarkdown — epistemic honesty', () => {
     const p5Line = md.split('\n').find((l) => l.includes('P5'))!;
     expect(p5Line).toMatch(/%/);                       // a real reply rate
     expect(p5Line).not.toMatch(/insufficient data/i);
+  });
+
+  it('uses honest "no-finding"/"flagged" labels + carries the absence⇒pass caveat (codex r1)', () => {
+    // "pass" overclaims — the critic records findings, not explicit
+    // per-principle passes, so "not flagged" includes never-evaluated
+    // principles. The artifact the drafter reads must say so.
+    const md = renderOutcomesMarkdown([]);
+    expect(md).toMatch(/no-finding/);
+    expect(md).toMatch(/flagged/);
+    expect(md).not.toMatch(/reply%\(pass\)/);  // the misleading old label is gone
+    expect(md).toMatch(/INCLUDES principles the critic\s*\n?\s*never evaluated|not an explicit\s*\n?\s*pass/i);
+    expect(md).toMatch(/SENT touches only/i);            // population caveat
+    expect(md).toMatch(/replied' OR 'meeting_booked'/);  // positive-outcome definition
+  });
+
+  it('renders a generated-at timestamp so digest staleness is visible (codex r1)', () => {
+    const at = new Date('2026-05-18T09:00:00.000Z');
+    expect(renderOutcomesMarkdown([], at)).toMatch(/Generated: 2026-05-18T09:00:00\.000Z/);
+  });
+
+  it('renders the strong-inverse case explicitly, NOT a bland "n/a" that hides it (codex r1)', async () => {
+    // no-finding arm: MIN_SAMPLE touches, ZERO replies. flagged arm:
+    // MIN_SAMPLE touches that all replied. Both arms sufficient; the
+    // ratio is undefined but it's the STRONGEST inverse signal.
+    for (let i = 0; i < MIN_SAMPLE; i++) makeTouch([], false);     // no-finding P5, all silent
+    for (let i = 0; i < MIN_SAMPLE; i++) makeTouch(['P5'], true);  // flagged P5, all replied
+    const p5 = (await computePrincipleOutcomes(PRINCIPLES))
+      .find((o) => o.principle_id === 'P5')!;
+    expect(p5.sufficient).toBe(true);
+    expect(p5.passed_replied).toBe(0);
+    expect(p5.failed_replied).toBe(MIN_SAMPLE);
+    const md = renderOutcomesMarkdown([p5]);
+    const line = md.split('\n').find((l) => l.includes('P5'))!;
+    expect(line).toMatch(/strong inverse|investigate/i);
+    expect(line).not.toMatch(/\bn\/a\b/);
   });
 });
