@@ -2,11 +2,15 @@ import { sql, eq } from 'drizzle-orm';
 import { db, schema } from '@/db';
 import { ingestSignal } from '../signals/ingest';
 import { formatError } from '../alerts/http';
-import { computeScore } from '../scoring/score';
-import { route as routeAccount, EMAIL_SHAPE } from '../routing/route';
+import { EMAIL_SHAPE } from '../routing/route';
 import { parseRoutingRules, RoutingRuleParseError } from '../routing/rules';
-import { dispatchTierPromotion, dispatchEngagementSpike } from '../alerts/dispatch';
+import { recomputeAccount } from '../recompute';
+import type { RecomputeConfig, RecomputeDeps } from '../recompute';
 import type { SignalConnector } from './types';
+
+// Re-export so existing importers of these types from this module
+// keep working after the shared core was extracted to lib/recompute.
+export type { RecomputeConfig, RecomputeDeps } from '../recompute';
 
 /**
  * Connector poll orchestration (Task 3.4).
@@ -294,12 +298,6 @@ export async function pollConnectors(opts: PollConnectorsOptions): Promise<PollS
 // recomputeAffectedAccounts
 // --------------------------------------------------------------------------
 
-export interface RecomputeConfig {
-  scoringMd: string;
-  routingMd: string;
-  defaultOwner: string;
-}
-
 export interface RecomputeSummary {
   attempted: number;
   succeeded: number;
@@ -307,29 +305,22 @@ export interface RecomputeSummary {
 }
 
 /**
- * Injectable so the parity with `/api/scoring/recompute`'s gating can
- * be unit-tested without seeding the whole scoring pipeline. Defaults
- * are the real implementations — the endpoint and scheduler get real
- * behavior; tests pass spies.
+ * Recompute every account that received new evidence this poll.
+ *
+ * Owns the connector-path's CONFIG-BEFORE-MUTATION gate (caller-
+ * specific: this path wants a failed *summary*, the route wants HTTP
+ * 503 — so the gate stays here, not in the shared core), then
+ * delegates the per-account score → route → best-effort-alert work
+ * to the SHARED `recomputeAccount` core (lib/recompute.ts) so this
+ * path and `/api/scoring/recompute` cannot drift again. `deps` is
+ * threaded through to the core unchanged, so existing parity tests
+ * (which spy these primitives) validate the SAME behavior through
+ * the unified core.
  */
-export interface RecomputeDeps {
-  computeScore: typeof computeScore;
-  route: typeof routeAccount;
-  dispatchTierPromotion: typeof dispatchTierPromotion;
-  dispatchEngagementSpike: typeof dispatchEngagementSpike;
-}
-
-const realRecomputeDeps: RecomputeDeps = {
-  computeScore,
-  route: routeAccount,
-  dispatchTierPromotion,
-  dispatchEngagementSpike,
-};
-
 export async function recomputeAffectedAccounts(
   accountIds: string[],
   cfg: RecomputeConfig,
-  deps: RecomputeDeps = realRecomputeDeps,
+  deps?: RecomputeDeps,
 ): Promise<RecomputeSummary> {
   // CONFIG-BEFORE-MUTATION invariant — parity with
   // /api/scoring/recompute. computeScore writes a lead_scores row, so
@@ -369,43 +360,11 @@ export async function recomputeAffectedAccounts(
 
   for (const accountId of accountIds) {
     try {
-      const score = await deps.computeScore(accountId, cfg.scoringMd);
-      await deps.route(accountId, score.scoreId, cfg.routingMd, cfg.defaultOwner);
-
-      // tier_promotion is gated on score.inserted — a dedupe-path
-      // recompute (inserted=false) can't represent a tier transition.
-      // Mirrors /api/scoring/recompute exactly.
-      if (score.inserted) {
-        try {
-          await deps.dispatchTierPromotion(
-            accountId, score.priorTier, score.tier, score.scoreId,
-          );
-        } catch (err) {
-          // Alerts are a side effect, not the work. A Slack/disk
-          // outage must not fail a recompute whose score+routing
-          // already committed.
-          console.error(
-            `[poll-recompute] tier_promotion dispatch threw for ${accountId}; ` +
-            `recompute continues without this alert.`,
-            formatError(err),
-          );
-        }
-      }
-
-      // engagement_spike is NOT gated on inserted — engagement-like
-      // signals often don't move the score fingerprint but ARE the
-      // signal this alert exists for. The dispatcher's per-day
-      // cooldown key dedupes.
-      try {
-        await deps.dispatchEngagementSpike(accountId);
-      } catch (err) {
-        console.error(
-          `[poll-recompute] engagement_spike dispatch threw for ${accountId}; ` +
-          `recompute continues without this alert.`,
-          formatError(err),
-        );
-      }
-
+      // The shared core does computeScore → route → best-effort
+      // alerts with the EXACT gating /api/scoring/recompute uses.
+      // `deps` is passed through unchanged so spied tests exercise
+      // the same code the route runs.
+      await recomputeAccount(accountId, cfg, deps);
       succeeded++;
     } catch (err) {
       // One account's score/route failure is isolated; the rest still
