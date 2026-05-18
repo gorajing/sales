@@ -261,23 +261,43 @@ describe('computePrincipleOutcomes — observable population', () => {
     expect(p5.flagged_silent).toBe(0);
   });
 
-  it('parseTs treats the SQLite space-format as UTC (TZ-independent, pins the codex r1 blocker)', () => {
-    // Direct parser test — robust regardless of the test runner's
-    // local TZ (codex r2: the old integration test used 2020 vs 2026
-    // so a naive local parse still picked the right one and the bug
-    // wasn't pinned). The bare SQLite CURRENT_TIMESTAMP format is
-    // UTC; `new Date('2026-05-06 12:00:00')` would read it as LOCAL.
-    const sqliteUtc = parseTs('2026-05-06 12:00:00');
-    expect(sqliteUtc).toBe(Date.UTC(2026, 4, 6, 12, 0, 0));
-    // Equivalent ISO-Z must parse to the SAME instant.
-    expect(sqliteUtc).toBe(parseTs('2026-05-06T12:00:00.000Z'));
-    // And it must NOT be the naive local interpretation whenever the
-    // runner is not UTC (in UTC they coincide — assertion still
-    // holds; off-UTC it actively catches the bug).
-    const naiveLocal = new Date('2026-05-06 12:00:00').getTime();
-    if (new Date().getTimezoneOffset() !== 0) {
-      expect(sqliteUtc).not.toBe(naiveLocal);
-    }
+  it('parseTs treats the SQLite space-format as UTC, and returns NaN for junk', () => {
+    // In-process positive pin (TZ-independent: explicit Z).
+    expect(parseTs('2026-05-06 12:00:00')).toBe(Date.UTC(2026, 4, 6, 12, 0, 0));
+    expect(parseTs('2026-05-06 12:00:00')).toBe(parseTs('2026-05-06T12:00:00.000Z'));
+    // codex r3 nit: junk → NaN (defensive; createdAt is NOT NULL).
+    expect(Number.isNaN(parseTs(''))).toBe(true);
+    expect(Number.isNaN(parseTs('not-a-date'))).toBe(true);
+  });
+
+  it('parseTs is UTC even under a non-UTC TZ (child process — genuinely pins the local-parse bug)', () => {
+    // codex r3: the in-process test above can't catch the bug in
+    // TZ=UTC CI (there local==UTC). Force a non-UTC TZ in a child
+    // node process and assert the SQLite space-format still resolves
+    // to the SAME instant as the explicit-Z form, AND differs from a
+    // naive `new Date(space)` local parse. This is the only way to
+    // pin a timezone-dependent bug regardless of the CI's own TZ.
+    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+    const path = require('node:path') as typeof import('node:path');
+    const mod = path.resolve(__dirname, '../../lib/engagement/attribute.ts').replace(/\\/g, '/');
+    // CommonJS require() (not dynamic import()) — under `tsx`,
+    // require('<file>.ts') exposes the named exports directly,
+    // whereas import() returns a {default, 'module.exports'} wrapper.
+    const script =
+      `const m = require('${mod}');` +
+      `const u = m.parseTs('2026-05-06 12:00:00');` +
+      `const z = m.parseTs('2026-05-06T12:00:00.000Z');` +
+      `const naive = new Date('2026-05-06 12:00:00').getTime();` +
+      `if (typeof m.parseTs !== 'function') { console.error('FAIL no parseTs'); process.exit(1); }` +
+      `if (u !== z) { console.error('FAIL space!=Z', u, z); process.exit(1); }` +
+      `if (u === naive) { console.error('FAIL space==naive-local (bug present)', u); process.exit(1); }` +
+      `console.log('OK');`;
+    const out = execFileSync(
+      process.execPath,
+      ['--import', 'tsx', '-e', script],
+      { env: { ...process.env, TZ: 'America/Los_Angeles' }, encoding: 'utf8' },
+    );
+    expect(out).toContain('OK');
   });
 
   it('picks the chronologically-later critique when SQLite-UTC and ISO-Z formats are mixed', async () => {
@@ -359,6 +379,24 @@ describe('computePrincipleOutcomes — observable population', () => {
     const p5 = (await computePrincipleOutcomes(PRINCIPLES))
       .find((o) => o.principle_id === 'P5')!;
     expect(p5.flagged_total).toBe(0);   // bounced → not a valid observation
+    expect(p5.noFinding_total).toBe(0);
+  });
+
+  it('a bounce POISONS the touch even if it later replied (documented conservative behavior — codex r3)', async () => {
+    // makeTouch already emits sent(11:00)+replied(12:00). Add a
+    // bounce: the conservative rule is "any bounce excludes the
+    // touch entirely", even with a later positive on the same
+    // touchId. Pin it so a future "only terminal bounce" refactor is
+    // a deliberate, reviewed change — not a silent semantics drift.
+    const touchId = makeTouch(['P5'], true);  // sent + replied
+    db.insert(schemaMod.engagementEvents).values({
+      id: newId('engagementEvent'), touchId, contactId: null,
+      eventType: 'bounced', occurredAt: '2026-05-06T11:15:00.000Z',
+    }).run();
+    const p5 = (await computePrincipleOutcomes(PRINCIPLES))
+      .find((o) => o.principle_id === 'P5')!;
+    expect(p5.flagged_total).toBe(0);          // poisoned, not counted as a win
+    expect(p5.flagged_replied).toBe(0);
     expect(p5.noFinding_total).toBe(0);
   });
 });

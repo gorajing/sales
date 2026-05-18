@@ -170,12 +170,17 @@ export async function computePrincipleOutcomes(
   // observing this send" instant, used for the redraft-ambiguity
   // exclusion below.
   const firstEventAt = new Map<string, number>();
-  // Touches whose ONLY relationship to delivery is a hard bounce:
-  // the message never landed, so it is NOT a valid reply-rate
-  // observation (counting it "silent" would turn a deliverability
-  // failure into principle evidence — codex 4.3 r2). Excluded from
-  // the denominator entirely. ('unsubscribed' = they DID receive it;
-  // left as an observed silent outcome for v1, refine in v1.5.)
+  // ANY touch with a 'bounced' event is excluded entirely — a hard
+  // bounce means the message never landed, so it is not a valid
+  // reply-rate observation (counting it "silent" would turn a
+  // deliverability failure into principle evidence — codex 4.3 r2).
+  // This is intentionally blunt: a bounce "poisons" the touch even
+  // if it was later resent on the same touchId and replied. Losing
+  // that rare eventual-success datum is the conservative trade — it
+  // can only shrink n and make "insufficient data" MORE likely,
+  // never inflate evidence. v1.5 (with a sent-attempt model) could
+  // refine to terminal-bounce-only. ('unsubscribed' = they DID
+  // receive it → left as an observed silent outcome for v1.)
   const bouncedTouches = new Set<string>();
   for (const e of allEvents) {
     if (!e.touchId) continue;
@@ -328,7 +333,10 @@ export function renderOutcomesMarkdown(
     'Advisory only. This is descriptive correlation, NOT causation, and NOT a score input.',
     'It is NOT auto-applied to data/principles.md; the drafter reads it as advisory context, not instruction.',
     'A correlation here is a prompt to investigate, never a verdict — reply behaviour has many causes.',
-    `Population = SENT touches only (those with ≥1 engagement event); drafted-but-unsent touches are excluded.`,
+    `Population = SENT touches only (≥1 engagement event). EXCLUDED: drafted-but-unsent touches; touches with`,
+    `a 'bounced' event (never delivered → not a valid reply observation); and touches redrafted AFTER engagement`,
+    `began (we cannot know which revision the reply answered — ambiguous attribution). These exclusions shrink n,`,
+    `which makes "insufficient data" MORE likely — deliberately conservative, never inflating the sample.`,
     `Positive outcome = a 'replied' OR 'meeting_booked' event for the touch. All other observed touches are "silent".`,
     `"no-finding" = the latest Sales-Coach critique did NOT flag this principle. This INCLUDES principles the critic`,
     `never evaluated (it records findings, not explicit per-principle passes) — so "no-finding" is NOT an explicit`,
