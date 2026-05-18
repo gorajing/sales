@@ -297,3 +297,31 @@ export const alerts = sqliteTable('alerts', {
   createdAt: text('created_at').notNull()
     .default(sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`),
 });
+
+// ─── v2 additions: connector poll watermark (Task 3.4) ───────────────────────
+
+/**
+ * One watermark row per connector. The poll orchestrator
+ * (`lib/connectors/poll.ts`) reads `lastPolledAt` as the default
+ * `since` for the next poll of that connector, and advances it to the
+ * poll's START time after a SUCCESSFUL poll only. A connector that
+ * failed keeps its old watermark so the next poll retries the same
+ * window — at-least-once delivery, made safe by `evidence.dedupe_key`.
+ *
+ * Deliberately minimal (Task 3.4 directive: "even if simple"). A
+ * config-hash column (invalidate the watermark when the connector's
+ * watch list / fixture changes, mirroring `routingRulesHash` on
+ * `routing_assignments`) is a documented future refinement, NOT built
+ * here — adding it now would be scope the directive explicitly bounded.
+ */
+export const connectorPollState = sqliteTable('connector_poll_state', {
+  // The connector's stable `name` ('github' | 'salesforce' | 'hubspot'
+  // | 'outreach') — the same identifier `SignalConnector.name` exposes.
+  // Natural PK: exactly one watermark per connector.
+  connectorName: text('connector_name').primaryKey(),
+  // ISO-8601 UTC. The START time of the last successful poll, used as
+  // the next poll's default `since`. Poll-start (not end) so events
+  // created mid-poll are caught next time; the inclusive [since, now]
+  // boundary + dedupe_key absorb the resulting small overlap.
+  lastPolledAt: text('last_polled_at').notNull(),
+});
