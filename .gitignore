@@ -21,3 +21,17 @@ tsconfig.tsbuildinfo
 # when v1 email writes its .eml stub. Test runs accumulate files here;
 # never check in.
 outbox/
+
+# Phase 6 application package — PRIVATE BY DEFAULT. Contains the
+# job-application artifacts: evidence-pack.json (may name a hiring
+# manager), personalized outreach (.eml/.txt), and the cover letter.
+# Uploaded to the careers portal directly, NOT pushed to the repo.
+#
+# Ignore the CONTENTS glob (`application/*`), NOT the directory
+# (`application/`): git cannot re-include a file inside a
+# fully-ignored directory, but CAN inside a directory whose contents
+# are ignored. This keeps the plan's selective-publish escape hatch
+# working — e.g. `!application/architecture-essay.md` to publish only
+# the non-personal architecture essay as a writing sample, while
+# evidence-pack.json and the outreach files stay private.
+application/*
