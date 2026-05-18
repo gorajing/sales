@@ -1,6 +1,44 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as schemaMod from '../../db/schema';
 
+// Pin the two recompute config files the route reads, so this suite is
+// immune to a cross-file FILESYSTEM race. Vitest runs test files in
+// parallel worker processes; the `@/db` `:memory:` mock isolates DB
+// state per worker, but the real filesystem is shared by all of them.
+// `tests/integration/inbound-pipeline.test.ts` transiently overwrites
+// the real `data/routing-rules.md` with malformed content (restored in
+// its `afterEach`) to exercise the recompute route's bad-config path —
+// if this suite's route read of that same on-disk file lands inside
+// that window, `parseRoutingRules` throws and `body.ok` flips to false,
+// a false failure unrelated to the poll→ingest→recompute→ok contract.
+// Serving committed, never-mutated fixtures keeps the ENTIRE pipeline
+// real (connectors, ingest, score, route, dispatch) while removing the
+// only nondeterministic input. Only the NAMED `readFileSync` is
+// wrapped; the drizzle migrator reads via the default export and is
+// deliberately left on real fs (it only ever reads db/migrations/*).
+vi.mock('node:fs', async () => {
+  const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+  const path = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const pinned = new Map<string, string>([
+    ['data/routing-rules.md', actual.readFileSync(
+      path.resolve(here, '../fixtures/recompute-rules/routing-rules.md'), 'utf8')],
+    ['data/scoring-rules.md', actual.readFileSync(
+      path.resolve(here, '../fixtures/recompute-rules/scoring-rules.md'), 'utf8')],
+  ]);
+  const readFileSync = ((p: unknown, ...rest: unknown[]) => {
+    if (typeof p === 'string') {
+      const norm = p.replace(/\\/g, '/');
+      for (const [suffix, content] of pinned) {
+        if (norm === suffix || norm.endsWith(`/${suffix}`)) return content;
+      }
+    }
+    return (actual.readFileSync as (...a: unknown[]) => unknown)(p, ...rest);
+  }) as typeof actual.readFileSync;
+  return { ...actual, readFileSync };
+});
+
 vi.mock('@/db', async () => {
   const { default: Database } = await import('better-sqlite3');
   const { drizzle } = await import('drizzle-orm/better-sqlite3');
