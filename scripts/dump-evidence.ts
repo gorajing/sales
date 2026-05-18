@@ -16,9 +16,10 @@
  * (a loud WARNING, not a failure): an account may legitimately have
  * no audited evidence yet — a research/audit gap, not a dump-evidence
  * fault. This script is NOT the gate. The hard stop is
- * `verify-application.ts`, which FAILS CLOSED if the cover letter
- * cites nothing or cites an id no `verified` row backs — so exiting 0
- * on an empty pack here cannot smuggle an unbacked claim downstream.
+ * `verify-application.ts`: exiting 0 on an empty pack here cannot
+ * make THAT gate pass — a zero-row pack gives it no `verified` row
+ * to back any cited id, and a letter that cites nothing fails its
+ * ≥1-citation floor regardless.
  */
 
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -60,9 +61,9 @@ function main(): number {
   );
   if (evidence.length === 0) {
     // Not a hard failure (an account legitimately may have no
-    // verified evidence yet), but the cover letter cannot cite
-    // anything — surface it so the operator runs research/audit
-    // before packaging.
+    // verified evidence yet), but with 0 verified rows no citation
+    // could resolve to a verified row — surface it so the operator
+    // runs research/audit before packaging.
     console.error(
       '[dump-evidence] WARNING: 0 verified rows — run research + audit ' +
       'and verify evidence in the UI before writing the cover letter.',
