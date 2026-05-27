@@ -11,3 +11,10 @@ dist/
 build/
 *.log
 tsconfig.tsbuildinfo
+
+# Private, local-only artifacts — never commit to a public repo:
+# the application package is target-specific (names the real company),
+# outbox/ is generated alert-email output, the digest is regenerated.
+application/
+outbox/
+data/principle-outcomes.md
