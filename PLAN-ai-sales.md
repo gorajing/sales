@@ -433,7 +433,7 @@ A team-ready posture without becoming a SaaS.
 
 ## Phase 6 — Closed-loop target application (1 day)
 
-The killer move. Use the tool you built to apply for the specific AI sales role you care about next. The plan is target-company agnostic: set `TARGET_COMPANY` and `TARGET_DOMAIN` for Anthropic, OpenAI, Harvey, Clay, Cursor, or any other role.
+The killer move. Use the tool you built to apply for the specific AI sales role you care about next. The plan is target-company agnostic: set `TARGET_COMPANY` and `TARGET_DOMAIN` to whichever company and role you're pursuing.
 
 ### Sequence
 

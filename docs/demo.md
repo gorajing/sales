@@ -1,8 +1,8 @@
-# 5-minute demo — Linear
+# 5-minute demo
 
 Goal: take a public company through every pipeline stage and show the resulting artifacts. A reviewer should be able to follow this script start-to-finish and reproduce the result.
 
-Target: [Linear](https://linear.app) — well-known issue tracker, lots of public news, public LinkedIn posts from leadership, and a public hiring footprint. Replace with any public B2B company if you're recording your own.
+Target: pick any well-known public B2B company with lots of public news, public LinkedIn posts from leadership, and a public hiring footprint (so auto-research has plenty to work with). The steps below use `<COMPANY>` / `<company>.com` as placeholders — substitute your pick.
 
 **Total runtime:** ~5 minutes of operator time + ~60 seconds of LLM wait spread across the run.
 
@@ -19,7 +19,7 @@ Open http://localhost:3000.
 
 ## 1. Create the account (15 s)
 
-UI: **Accounts → New** → name=`Linear`, domain=`linear.app`. Click **Create**.
+UI: **Accounts → New** → name=`<COMPANY>`, domain=`<company>.com`. Click **Create**.
 
 Expected: redirect to `/accounts/<id>`. The Evidence tab is empty; the Contacts tab is empty.
 
@@ -43,7 +43,7 @@ Expected: most rows verify. Disputed rows are typically (a) facts inferred acros
 
 UI: **Contacts → Add**. Fill:
 
-- Full name: any public Linear leader (CEO/CTO/CRO — real name from the evidence pack)
+- Full name: any public leader at the company (CEO/CTO/CRO — real name from the evidence pack)
 - Title: pulled from evidence
 - Archetype: `leader` (or `enabler` if it's a head-of-ops type)
 

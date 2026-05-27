@@ -311,7 +311,7 @@ git commit -m "docs: add architecture essay covering 6 design decisions"
 
 - [ ] **Step 0.4.1: Write demo.md**
 
-Create `docs/demo.md` with this exact structure (fill body with concrete commands and expected screenshots — use a real public company name like Vercel, Linear, or Retool, not the current target company, so the final application evidence pack stays clean):
+Create `docs/demo.md` with this exact structure (fill body with concrete commands and expected screenshots — use a real public company name (any well-known public B2B company), not your actual target company, so the final application evidence pack stays clean):
 
 ```markdown
 # 5-minute demo — [Company]
@@ -5327,7 +5327,7 @@ git commit -m "feat(engagement): nightly digest script writes principle-outcomes
 
 ## Phase 6 — Closed-Loop Target Application Demo
 
-The final demo is target-company agnostic. Use the same workflow for Anthropic, OpenAI, Harvey, Clay, Cursor, or any other AI sales role by changing the three environment variables below.
+The final demo is target-company agnostic. Use the same workflow for any company and role you're pursuing by changing the three environment variables below.
 
 ### Task 6.1: Research target company + audit evidence
 
@@ -5338,12 +5338,12 @@ The final demo is target-company agnostic. Use the same workflow for Anthropic, 
 Set the target once:
 
 ```bash
-export TARGET_COMPANY="Anthropic"
-export TARGET_DOMAIN="anthropic.com"
+export TARGET_COMPANY="Acme"
+export TARGET_DOMAIN="acme.example.com"
 export TARGET_ROLE_LABEL="AI sales automation"
 ```
 
-Anthropic is the example because it was the first target for this plan. For another role, change only those three values.
+The values above are placeholders. For your actual target, change only those three values.
 
 ```bash
 curl -sS -X POST http://localhost:3000/api/accounts \
