@@ -2,6 +2,24 @@
 
 Personal, local-first B2B sales research-and-outreach tool. Every factual claim in every draft traces to a verified evidence row. Drafts are critiqued against a user-owned principles file. Every revision is preserved.
 
+## Companion GTM control plane
+
+This repo owns evidence-grounded research and outreach. The companion
+[`gtm-ops-router`](https://github.com/gorajing/gtm-ops-router) repo owns the
+upstream operating ledger: inbound deal intake, enrichment, route decisions,
+finance/legal flags, role queues, deployment readiness, audit events, and
+operator-visible workflow state.
+
+```text
+        gtm-ops-router                         Sales
+inbound deal -> route/work item -> sales handoff JSON -> evidence research -> drafted outreach -> critic review
+```
+
+`gtm-ops-router` emits a `gtm-ops-router.sales-handoff.v1` JSON payload as a
+research seed. Sales treats that payload as context, not verified evidence:
+public facts still need to become evidence rows and pass the verification and
+critic workflow before they appear in outreach.
+
 ## Requirements
 - macOS with the `claude` CLI installed and logged into a Claude Max 20 account
 - Node.js 20.9+, pnpm
