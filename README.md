@@ -20,6 +20,16 @@ research seed. Sales treats that payload as context, not verified evidence:
 public facts still need to become evidence rows and pass the verification and
 critic workflow before they appear in outreach.
 
+Import a router export into Sales:
+
+```bash
+pnpm import:gtm-handoff ../gtm-ops-router/data/sales-handoff.json
+```
+
+The importer creates or reuses accounts and contacts, stores the router handoff
+as a `gtm_handoff_imports` record, and leaves the Evidence table untouched until
+you capture and audit public sources.
+
 ## Requirements
 - macOS with the `claude` CLI installed and logged into a Claude Max 20 account
 - Node.js 20.9+, pnpm

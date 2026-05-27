@@ -13,6 +13,7 @@
     "test:watch": "vitest",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx db/migrate.ts",
+    "import:gtm-handoff": "tsx scripts/import-gtm-handoff.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

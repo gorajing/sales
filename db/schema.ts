@@ -152,3 +152,21 @@ export const deliverableAccounts = sqliteTable('deliverable_accounts', {
   sequenceId: text('sequence_id'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const gtmHandoffImports = sqliteTable('gtm_handoff_imports', {
+  routerDealId: text('router_deal_id').primaryKey(),
+  accountId: text('account_id').notNull().references(() => accounts.id),
+  schemaVersion: text('schema_version').notNull(),
+  generatedAt: text('generated_at').notNull(),
+  importedAt: text('imported_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  accountName: text('account_name').notNull(),
+  accountDomain: text('account_domain'),
+  routeKind: text('route_kind').notNull(),
+  salesOwner: text('sales_owner'),
+  amountUsd: integer('amount_usd').notNull(),
+  sourceChannel: text('source_channel').notNull(),
+  researchBrief: text('research_brief').notNull(),
+  suggestedEvidenceQuestionsJson: text('suggested_evidence_questions_json', { mode: 'json' })
+    .$type<string[]>().notNull().default(sql`'[]'`),
+  payloadJson: text('payload_json').notNull(),
+});
