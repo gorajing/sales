@@ -9,20 +9,28 @@ declare global {
   var __salesDb: ReturnType<typeof drizzle<typeof schema>> | undefined;
   // eslint-disable-next-line no-var
   var __salesSqlite: Database.Database | undefined;
+  // eslint-disable-next-line no-var
+  var __salesSqlitePath: string | undefined;
+}
+
+function resolveDbPath() {
+  return process.env.SALES_DB_PATH
+    ? path.resolve(process.env.SALES_DB_PATH)
+    : path.resolve(process.cwd(), 'data/sales.db');
 }
 
 function createDb() {
-  const dbPath = process.env.SALES_DB_PATH
-    ? path.resolve(process.env.SALES_DB_PATH)
-    : path.resolve(process.cwd(), 'data/sales.db');
+  const dbPath = resolveDbPath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   const sqlite = new Database(dbPath);
   sqlite.pragma('journal_mode = WAL');
   sqlite.pragma('foreign_keys = ON');
   globalThis.__salesSqlite = sqlite;
+  globalThis.__salesSqlitePath = dbPath;
   return drizzle(sqlite, { schema });
 }
 
 export const db = globalThis.__salesDb ?? (globalThis.__salesDb = createDb());
 export const sqlite = globalThis.__salesSqlite!;
+export const sqlitePath = globalThis.__salesSqlitePath ?? resolveDbPath();
 export { schema };

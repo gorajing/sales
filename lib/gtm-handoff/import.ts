@@ -3,13 +3,33 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@/db';
 import { newId } from '@/lib/id';
+import { isSafeHttpUrl } from './trace';
 
 export const GTM_HANDOFF_SCHEMA_VERSION = 'gtm-ops-router.sales-handoff.v1';
 
 const RouteKind = z.enum(['human_assisted', 'self_serve', 'nurture']);
+const EvidenceBoundary = z.literal('research_seed_not_verified_evidence');
+// Shared rule with the account-page render sink (lib/gtm-handoff/trace.ts).
+const SafeHttpUrl = z.string().refine(
+  (value) => isSafeHttpUrl(value) !== null,
+  'operator links must use http or https',
+);
 
 const GtmHandoffAccount = z.object({
   routerDealId: z.string().min(1),
+  // Optional for backward compatibility: a minimal or pre-trace v1 export may
+  // omit this block. Absence is safe — the research-seed boundary is enforced
+  // structurally by the evidence layer (only verified rows are citable) and the
+  // account page shows the "not verified evidence" notice regardless. When
+  // present, the values must still match the router's contract literals.
+  trace: z.object({
+    sourceSystem: z.literal('gtm-ops-router'),
+    evidenceBoundary: EvidenceBoundary,
+  }).passthrough().optional(),
+  operatorLinks: z.object({
+    consoleUrl: SafeHttpUrl,
+    eventsUrl: SafeHttpUrl,
+  }).passthrough().optional(),
   account: z.object({
     name: z.string().min(1),
     domain: z.string().nullable(),
