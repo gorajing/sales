@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateDraft, normalize } from '../../lib/evidence/validate';
+import { validateDraft, normalize, selectValidSpans } from '../../lib/evidence/validate';
 import type { DraftTouch } from '../../lib/claude/types';
 
 const evidence = [
@@ -105,5 +105,57 @@ describe('validateDraft', () => {
     expect(issues.length).toBeGreaterThanOrEqual(2);
     expect(issues.some((i) => i.kind === 'span_not_in_snippet')).toBe(true);
     expect(issues.some((i) => i.kind === 'unknown_evidence_id')).toBe(true);
+  });
+});
+
+describe('selectValidSpans (claim-audit span selection)', () => {
+  const ev = [
+    { id: 'ev_1', snippet: 'alpha appears here' },
+    { id: 'ev_12', snippet: 'beta appears here' },
+  ];
+
+  // Would FAIL under the old `detail.includes(evidence_id)` filter: the issue for
+  // ev_12 ("…not in snippet of ev_12") includes the substring "ev_1", wrongly
+  // dropping the valid ev_1 span.
+  it('does not cross-match evidence ids by substring (ev_1 vs ev_12)', () => {
+    const spans = [
+      { evidence_id: 'ev_1', span: 'alpha', claim: 'ok' },
+      { evidence_id: 'ev_12', span: 'NOT PRESENT', claim: 'bad' },
+    ];
+    const draft: DraftTouch = {
+      subject: null, body: 'x', channel: 'linkedin',
+      cited_evidence_ids: ['ev_1', 'ev_12'], supporting_spans: spans, rationale: '',
+    };
+    const issues = validateDraft(draft, ev);
+    expect(selectValidSpans(spans, issues)).toEqual([
+      { evidence_id: 'ev_1', span: 'alpha', claim: 'ok' },
+    ]);
+  });
+
+  // Would FAIL under the old filter: one bad span for ev_1 produced an issue
+  // mentioning "ev_1", dropping the GOOD ev_1 span too.
+  it('drops only the bad span for an id, not every span citing that id', () => {
+    const spans = [
+      { evidence_id: 'ev_1', span: 'alpha', claim: 'good' },
+      { evidence_id: 'ev_1', span: 'NOT PRESENT', claim: 'bad' },
+    ];
+    const draft: DraftTouch = {
+      subject: null, body: 'x', channel: 'linkedin',
+      cited_evidence_ids: ['ev_1'], supporting_spans: spans, rationale: '',
+    };
+    const issues = validateDraft(draft, ev);
+    expect(selectValidSpans(spans, issues)).toEqual([
+      { evidence_id: 'ev_1', span: 'alpha', claim: 'good' },
+    ]);
+  });
+
+  it('drops all spans citing an unknown evidence id', () => {
+    const spans = [{ evidence_id: 'ev_ghost', span: 'whatever', claim: 'x' }];
+    const draft: DraftTouch = {
+      subject: null, body: 'x', channel: 'linkedin',
+      cited_evidence_ids: ['ev_ghost'], supporting_spans: spans, rationale: '',
+    };
+    const issues = validateDraft(draft, ev);
+    expect(selectValidSpans(spans, issues)).toEqual([]);
   });
 });

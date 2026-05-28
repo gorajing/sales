@@ -2,7 +2,7 @@ import { spawnClaude as realSpawn } from '../claude/run';
 import { renderPrompt } from '../claude/prompts';
 import { loadClaimAuditSkill } from '../claude/prompts/claim-audit';
 import { ClaimAuditResult } from '../claude/types';
-import { validateDraft } from '../evidence/validate';
+import { validateDraft, selectValidSpans } from '../evidence/validate';
 import { db, schema } from '@/db';
 import { eq, and } from 'drizzle-orm';
 import { newId } from '../id';
@@ -68,13 +68,10 @@ export async function auditClaims(
   };
   const issues = validateDraft(pseudoDraft, evidenceRows.map((e) => ({ id: e.id, snippet: e.snippet })));
 
-  // Filter to only VALID spans
-  const validSpans = result.supporting_spans.filter((s) =>
-    !issues.some((i) =>
-      (i.kind === 'unknown_evidence_id' && i.detail === s.evidence_id) ||
-      (i.kind === 'span_not_in_snippet' && i.detail.includes(s.evidence_id))
-    )
-  );
+  // Keep only spans that survived validation, matched by exact (evidence_id,
+  // span) identity (see selectValidSpans) — not by substring-scanning issue
+  // detail, which cross-matched ids and dropped valid spans citing a partly-bad id.
+  const validSpans = selectValidSpans(result.supporting_spans, issues);
   const citedIds = Array.from(new Set(validSpans.map((s) => s.evidence_id)));
 
   // Create a new revision preserving the body, updating spans + cited ids
