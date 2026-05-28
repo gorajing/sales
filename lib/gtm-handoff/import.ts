@@ -17,10 +17,15 @@ const SafeHttpUrl = z.string().refine(
 
 const GtmHandoffAccount = z.object({
   routerDealId: z.string().min(1),
+  // Optional for backward compatibility: a minimal or pre-trace v1 export may
+  // omit this block. Absence is safe — the research-seed boundary is enforced
+  // structurally by the evidence layer (only verified rows are citable) and the
+  // account page shows the "not verified evidence" notice regardless. When
+  // present, the values must still match the router's contract literals.
   trace: z.object({
     sourceSystem: z.literal('gtm-ops-router'),
     evidenceBoundary: EvidenceBoundary,
-  }).passthrough(),
+  }).passthrough().optional(),
   operatorLinks: z.object({
     consoleUrl: SafeHttpUrl,
     eventsUrl: SafeHttpUrl,

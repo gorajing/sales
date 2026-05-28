@@ -188,4 +188,19 @@ describe('GTM handoff import', () => {
 
     expect(() => importGtmHandoffPayload(payload)).toThrow();
   });
+
+  it('accepts a legacy v1 payload that omits the optional trace block', () => {
+    // Pre-trace v1 exports (e.g. handoffs generated before the trace block was
+    // added) must still import; trace is metadata, not the boundary itself.
+    const payload = structuredClone(basePayload);
+    delete (payload.accounts[0] as { trace?: unknown }).trace;
+
+    const result = importGtmHandoffPayload(payload);
+    expect(result).toMatchObject({
+      processed: 1,
+      accountsCreated: 1,
+      contactsCreated: 1,
+      handoffsCreated: 1,
+    });
+  });
 });
