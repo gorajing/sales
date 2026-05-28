@@ -3,15 +3,17 @@ import { z } from 'zod';
 import { and, eq } from 'drizzle-orm';
 import { db, schema } from '@/db';
 import { newId } from '@/lib/id';
+import { isSafeHttpUrl } from './trace';
 
 export const GTM_HANDOFF_SCHEMA_VERSION = 'gtm-ops-router.sales-handoff.v1';
 
 const RouteKind = z.enum(['human_assisted', 'self_serve', 'nurture']);
 const EvidenceBoundary = z.literal('research_seed_not_verified_evidence');
-const SafeHttpUrl = z.string().url().refine((value) => {
-  const parsed = new URL(value);
-  return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-}, 'operator links must use http or https');
+// Shared rule with the account-page render sink (lib/gtm-handoff/trace.ts).
+const SafeHttpUrl = z.string().refine(
+  (value) => isSafeHttpUrl(value) !== null,
+  'operator links must use http or https',
+);
 
 const GtmHandoffAccount = z.object({
   routerDealId: z.string().min(1),

@@ -2,39 +2,9 @@ import { db, schema } from '@/db';
 import { eq } from 'drizzle-orm';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
+import { parseOperatorLinks } from '@/lib/gtm-handoff/trace';
 
 export const dynamic = 'force-dynamic';
-
-type GtmTracePayload = {
-  trace?: {
-    sourceSystem?: unknown;
-    evidenceBoundary?: unknown;
-  };
-  operatorLinks?: {
-    consoleUrl?: unknown;
-    eventsUrl?: unknown;
-  };
-};
-
-function parseGtmTracePayload(payloadJson: string): GtmTracePayload {
-  try {
-    const parsed = JSON.parse(payloadJson) as unknown;
-    return parsed && typeof parsed === 'object' ? parsed as GtmTracePayload : {};
-  } catch {
-    return {};
-  }
-}
-
-function safeHttpUrl(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-    return parsed.toString();
-  } catch {
-    return null;
-  }
-}
 
 export default async function AccountPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -59,9 +29,7 @@ export default async function AccountPage({ params }: { params: Promise<{ id: st
           </h2>
           <ul className="mt-3 space-y-3">
             {handoffs.map((handoff) => {
-              const tracePayload = parseGtmTracePayload(handoff.payloadJson);
-              const consoleUrl = safeHttpUrl(tracePayload.operatorLinks?.consoleUrl);
-              const eventsUrl = safeHttpUrl(tracePayload.operatorLinks?.eventsUrl);
+              const { consoleUrl, eventsUrl } = parseOperatorLinks(handoff.payloadJson);
               return (
                 <li key={handoff.routerDealId} className="rounded border border-neutral-200 bg-white p-3">
                   <div className="flex flex-wrap items-center gap-2 text-sm">
