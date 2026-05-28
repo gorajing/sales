@@ -30,6 +30,26 @@ The importer creates or reuses accounts and contacts, stores the router handoff
 as a `gtm_handoff_imports` record, and leaves the Evidence table untouched until
 you capture and audit public sources.
 
+## Demo
+
+![Imported GTM handoff seed on the account page](docs/sales-gtm-handoff.png)
+
+The router seed is context only — the Evidence tab stays empty until you capture
+and audit public sources:
+
+![Evidence tab empty until captured and audited](docs/sales-evidence-empty.png)
+
+Full cross-repo walkthrough: see [the demo script](https://github.com/gorajing/gtm-ops-router/blob/main/docs/DEMO_SCRIPT.md). To try
+just the Sales side:
+
+```bash
+pnpm import:gtm-handoff ../gtm-ops-router/data/sales-handoff.sample.json
+pnpm dev   # http://localhost:3000
+```
+
+The account shows the router seed; the Evidence table stays empty until you
+capture and audit public sources.
+
 ## Requirements
 - macOS with the `claude` CLI installed and logged into a Claude Max 20 account
 - Node.js 20.9+, pnpm
