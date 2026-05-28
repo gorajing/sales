@@ -7,9 +7,22 @@ import { newId } from '@/lib/id';
 export const GTM_HANDOFF_SCHEMA_VERSION = 'gtm-ops-router.sales-handoff.v1';
 
 const RouteKind = z.enum(['human_assisted', 'self_serve', 'nurture']);
+const EvidenceBoundary = z.literal('research_seed_not_verified_evidence');
+const SafeHttpUrl = z.string().url().refine((value) => {
+  const parsed = new URL(value);
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+}, 'operator links must use http or https');
 
 const GtmHandoffAccount = z.object({
   routerDealId: z.string().min(1),
+  trace: z.object({
+    sourceSystem: z.literal('gtm-ops-router'),
+    evidenceBoundary: EvidenceBoundary,
+  }).passthrough(),
+  operatorLinks: z.object({
+    consoleUrl: SafeHttpUrl,
+    eventsUrl: SafeHttpUrl,
+  }).passthrough().optional(),
   account: z.object({
     name: z.string().min(1),
     domain: z.string().nullable(),

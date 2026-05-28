@@ -23,11 +23,12 @@ critic workflow before they appear in outreach.
 Import a router export into Sales:
 
 ```bash
-pnpm import:gtm-handoff ../gtm-ops-router/data/sales-handoff.json
+pnpm import:gtm-handoff -- ../gtm-ops-router/data/sales-handoff.json
 ```
 
 The importer creates or reuses accounts and contacts, stores the router handoff
-as a `gtm_handoff_imports` record, and leaves the Evidence table untouched until
+as a `gtm_handoff_imports` record, renders a GTM trace card back to the router
+when operator links are present, and leaves the Evidence table untouched until
 you capture and audit public sources.
 
 ## Demo
@@ -43,12 +44,12 @@ Full cross-repo walkthrough: see [the demo script](https://github.com/gorajing/g
 just the Sales side:
 
 ```bash
-pnpm import:gtm-handoff ../gtm-ops-router/data/sales-handoff.sample.json
+pnpm import:gtm-handoff -- ../gtm-ops-router/data/sales-handoff.sample.json
 pnpm dev   # http://localhost:3000
 ```
 
-The account shows the router seed; the Evidence table stays empty until you
-capture and audit public sources.
+The account shows the router seed and a "research seed only" trace warning; the
+Evidence table stays empty until you capture and audit public sources.
 
 ## Requirements
 - macOS with the `claude` CLI installed and logged into a Claude Max 20 account

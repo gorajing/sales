@@ -2,8 +2,8 @@ node_modules/
 .next/
 .env
 .env.local
-data/sales.db
-data/sales.db-journal
+data/*.db
+data/*.db-journal
 data/*.db-shm
 data/*.db-wal
 .DS_Store

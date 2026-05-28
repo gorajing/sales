@@ -39,6 +39,14 @@ const basePayload = {
   accounts: [
     {
       routerDealId: 'D-ryder',
+      trace: {
+        sourceSystem: 'gtm-ops-router',
+        evidenceBoundary: 'research_seed_not_verified_evidence',
+      },
+      operatorLinks: {
+        consoleUrl: 'http://localhost:8787/?deal=D-ryder',
+        eventsUrl: 'http://localhost:8787/deals/D-ryder/events',
+      },
       account: {
         name: 'Ryder Digital',
         domain: 'Ryder-Digital.com',
@@ -129,6 +137,15 @@ describe('GTM handoff import', () => {
     expect(handoffs[0]?.suggestedEvidenceQuestionsJson).toEqual(
       basePayload.accounts[0].salesToolInput.suggestedEvidenceQuestions,
     );
+    const storedPayload = JSON.parse(handoffs[0]?.payloadJson ?? '{}');
+    expect(storedPayload.trace).toEqual({
+      sourceSystem: 'gtm-ops-router',
+      evidenceBoundary: 'research_seed_not_verified_evidence',
+    });
+    expect(storedPayload.operatorLinks).toEqual({
+      consoleUrl: 'http://localhost:8787/?deal=D-ryder',
+      eventsUrl: 'http://localhost:8787/deals/D-ryder/events',
+    });
     expect(evidence).toHaveLength(0);
   });
 
@@ -163,5 +180,12 @@ describe('GTM handoff import', () => {
     expect(() =>
       importGtmHandoffPayload({ ...basePayload, schemaVersion: 'wrong.v1' }),
     ).toThrow();
+  });
+
+  it('rejects non-http operator links', () => {
+    const payload = structuredClone(basePayload);
+    payload.accounts[0].operatorLinks.consoleUrl = 'javascript:alert(1)';
+
+    expect(() => importGtmHandoffPayload(payload)).toThrow();
   });
 });
