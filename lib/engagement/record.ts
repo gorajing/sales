@@ -7,11 +7,18 @@ import { newId } from '@/lib/id';
 // ---------------------------------------------------------------------------
 const CANONICAL_UTC_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 
-function assertCanonicalUtc(occurredAt: string): void {
-  if (!CANONICAL_UTC_RE.test(occurredAt)) {
+function assertCanonicalUtc(value: string, field = 'occurredAt'): void {
+  if (!CANONICAL_UTC_RE.test(value)) {
     throw new Error(
-      `occurredAt must be canonical UTC (YYYY-MM-DDTHH:mm:ss.sssZ), got: ${occurredAt}`,
+      `${field} must be canonical UTC (YYYY-MM-DDTHH:mm:ss.sssZ), got: ${value}`,
     );
+  }
+  // Shape-match is not enough: 2026-99-99T... matches the regex but is not a
+  // real instant. Round-trip through Date so the DB never holds a timestamp the
+  // router's contract (which also round-trips) would later reject.
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new Error(`${field} must be canonical UTC (round-trip failed), got: ${value}`);
   }
 }
 
@@ -98,6 +105,13 @@ export function recordEngagementEvent<K extends EngagementEventKind>(
   input: RecordEngagementEventInput<K>,
 ): RecordEngagementEventResult {
   assertCanonicalUtc(input.occurredAt);
+  // The payload carries its own timestamps for some kinds — validate them too so
+  // no kind can smuggle an invalid instant past the boundary into the DB.
+  if (input.kind === 'meeting_booked') {
+    assertCanonicalUtc((input.payload as MeetingBookedPayload).meetingAt, 'meetingAt');
+  } else if (input.kind === 'no_response') {
+    assertCanonicalUtc((input.payload as NoResponsePayload).asOf, 'asOf');
+  }
 
   let { accountId, routerDealId } = input;
 

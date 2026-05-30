@@ -464,3 +464,79 @@ describe('buildEngagementFeedback — canonical timestamps everywhere', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Review fixes (Codex round 1): authoritative columns, orphan-proof coverage,
+// round-trip timestamp validation.
+// ---------------------------------------------------------------------------
+describe('emitted object uses authoritative columns', () => {
+  it('column kind/eventId/occurredAt win even if payloadJson carries those keys', async () => {
+    await insertEvent({
+      id: 'ee_col', accountId: 'acc_1', routerDealId: 'deal_abc', touchId: 'to_1',
+      kind: 'sent', eventId: 'evt_col', occurredAt: '2026-05-10T09:00:00.000Z',
+      source: 'sales_observed',
+      // A legacy/poisoned payload that tries to shadow the trusted columns:
+      payloadJson: {
+        touchId: 'to_1', channel: 'email',
+        kind: 'bounced', eventId: 'evt_payload', occurredAt: '2030-01-01T00:00:00.000Z',
+      },
+    });
+
+    const fb = buildEngagementFeedback({ generatedAt: NOW });
+    const ev = fb.deals[0]!.events[0]! as Record<string, unknown>;
+    expect(ev.kind).toBe('sent'); // column, not the payload's 'bounced'
+    expect(ev.eventId).toBe('evt_col'); // column, not 'evt_payload'
+    expect(ev.occurredAt).toBe('2026-05-10T09:00:00.000Z'); // column, not 2030
+    expect(ev.channel).toBe('email'); // genuine payload field preserved
+  });
+});
+
+describe('coverage is not foolable by orphan events', () => {
+  it('reports complete=false when an orphan deal offsets a routed deal with no feedback', async () => {
+    // Handoffs are deal_abc + deal_xyz (scanned=2). Feedback exists for deal_abc
+    // and for an ORPHAN routerDealId absent from gtmHandoffImports. Count-only
+    // logic would see emitted(2)===scanned(2) and wrongly report complete=true,
+    // masking that deal_xyz has no feedback.
+    await insertEvent({
+      id: 'ee_abc', accountId: 'acc_1', routerDealId: 'deal_abc', touchId: 'to_1',
+      kind: 'sent', eventId: 'e_abc', occurredAt: '2026-05-10T09:00:00.000Z',
+      source: 'sales_observed', payloadJson: { touchId: 'to_1', channel: 'email' },
+    });
+    await insertEvent({
+      id: 'ee_orphan', accountId: 'acc_1', routerDealId: 'deal_ORPHAN', touchId: 'to_1',
+      kind: 'sent', eventId: 'e_orphan', occurredAt: '2026-05-10T09:00:00.000Z',
+      source: 'sales_observed', payloadJson: { touchId: 'to_1', channel: 'email' },
+    });
+
+    const fb = buildEngagementFeedback({ generatedAt: NOW });
+    expect(fb.coverage.scanned).toBe(2);
+    expect(fb.coverage.complete).toBe(false);
+    // The orphan is still emitted (we do not silently drop observed data)...
+    expect(fb.deals.map((d) => d.routerDealId)).toContain('deal_ORPHAN');
+    // ...but it must not be counted as covering a routed deal.
+  });
+
+  it('reports complete=true only when the emitted deal set equals the routed set', async () => {
+    await insertEvent({
+      id: 'ee_a', accountId: 'acc_1', routerDealId: 'deal_abc', touchId: 'to_1',
+      kind: 'sent', eventId: 'e_a', occurredAt: '2026-05-10T09:00:00.000Z',
+      source: 'sales_observed', payloadJson: { touchId: 'to_1', channel: 'email' },
+    });
+    await insertEvent({
+      id: 'ee_b', accountId: 'acc_2', routerDealId: 'deal_xyz', touchId: null,
+      kind: 'opportunity_created', eventId: 'e_b', occurredAt: '2026-05-10T09:00:00.000Z',
+      source: 'sales_reported', payloadJson: { amountUsd: 1000, crmRef: null },
+    });
+
+    const fb = buildEngagementFeedback({ generatedAt: NOW });
+    expect(fb.coverage.complete).toBe(true);
+  });
+});
+
+describe('generatedAt round-trip validation', () => {
+  it('rejects a generatedAt that matches the shape but is not a real date', () => {
+    expect(() =>
+      buildEngagementFeedback({ generatedAt: '2026-99-99T99:99:99.999Z' }),
+    ).toThrow(/canonical UTC/);
+  });
+});

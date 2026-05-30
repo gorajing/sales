@@ -13,6 +13,13 @@ function assertCanonicalUtc(value: string): void {
       `generatedAt must be canonical UTC (YYYY-MM-DDTHH:mm:ss.sssZ), got: ${value}`,
     );
   }
+  // Shape-match is not enough: a value like 2026-99-99T... matches the regex but
+  // is not a real instant. Round-trip through Date so we never emit a timestamp
+  // the router's contract (which also round-trips) would reject.
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new Error(`generatedAt must be canonical UTC (round-trip failed), got: ${value}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -73,11 +80,14 @@ function emit(row: {
   occurredAt: string;
   payloadJson: Record<string, unknown>;
 }): Record<string, unknown> {
+  // Spread payloadJson FIRST so the authoritative columns (kind/eventId/
+  // occurredAt) always win — a payload that happens to carry those keys must
+  // never shadow the trusted column values (they also drive deterministic sort).
   return {
+    ...row.payloadJson,
     kind: row.kind,
     eventId: row.eventId,
     occurredAt: row.occurredAt,
-    ...row.payloadJson,
   };
 }
 
@@ -109,9 +119,13 @@ export function buildEngagementFeedback(opts: {
     .all();
 
   // scanned = every routed deal sales knows about (all gtmHandoffImports rows).
-  const scanned = db.select({ routerDealId: schema.gtmHandoffImports.routerDealId })
-    .from(schema.gtmHandoffImports)
-    .all().length;
+  const handoffIds = new Set(
+    db.select({ routerDealId: schema.gtmHandoffImports.routerDealId })
+      .from(schema.gtmHandoffImports)
+      .all()
+      .map((r) => r.routerDealId),
+  );
+  const scanned = handoffIds.size;
 
   // Group rows by routerDealId.
   const grouped = new Map<string, { events: EngagementEvent[]; signals: CommercialSignal[] }>();
@@ -147,13 +161,18 @@ export function buildEngagementFeedback(opts: {
   }
 
   const emitted = deals.length;
+  // Complete only when the emitted deal set is EXACTLY the routed (handoff) set:
+  // every routed deal has feedback AND no out-of-scope (orphan) deal is present.
+  // A bare count equality is foolable — an orphan deal could offset a routed
+  // deal that has no feedback and falsely report complete.
+  const complete = emitted === scanned && deals.every((d) => handoffIds.has(d.routerDealId));
 
   return {
     schemaVersion: ENGAGEMENT_FEEDBACK_SCHEMA_VERSION,
     generatedAt: opts.generatedAt,
     source: { system: 'sales', purpose: opts.purpose ?? DEFAULT_PURPOSE },
     coverage: {
-      complete: emitted === scanned,
+      complete,
       scanned,
       emitted,
       since: null,

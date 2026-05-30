@@ -481,3 +481,49 @@ describe('identifier consistency guards', () => {
     expect(events).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Canonical UTC validation must round-trip (not just match the shape) and must
+// cover the payload's own timestamps, so the DB never holds a value the router
+// contract would later reject.
+// ---------------------------------------------------------------------------
+describe('canonical UTC round-trip validation', () => {
+  it('rejects an occurredAt that matches the shape but is not a real date', () => {
+    expect(() =>
+      recordEngagementEvent({
+        kind: 'bounced',
+        payload: { touchId: 'to_1', reason: 'x' },
+        occurredAt: '2026-99-99T00:00:00.000Z',
+        source: 'sales_observed',
+        accountId: 'acc_1',
+        routerDealId: 'deal_abc',
+      }),
+    ).toThrow(/canonical UTC/);
+  });
+
+  it('rejects a meeting_booked whose meetingAt is shape-valid but not a real date', () => {
+    expect(() =>
+      recordEngagementEvent({
+        kind: 'meeting_booked',
+        payload: { touchId: 'to_1', meetingAt: '2026-99-99T00:00:00.000Z' },
+        occurredAt: NOW,
+        source: 'sales_reported',
+        accountId: 'acc_1',
+        routerDealId: 'deal_abc',
+      }),
+    ).toThrow(/canonical UTC/);
+  });
+
+  it('rejects a no_response whose asOf is shape-valid but not a real date', () => {
+    expect(() =>
+      recordEngagementEvent({
+        kind: 'no_response',
+        payload: { asOf: '2026-99-99T00:00:00.000Z', windowDays: 7, lastTouchId: 'to_1', derived: true },
+        occurredAt: NOW,
+        source: 'sales_window_evaluator',
+        accountId: 'acc_1',
+        routerDealId: 'deal_abc',
+      }),
+    ).toThrow(/canonical UTC/);
+  });
+});
