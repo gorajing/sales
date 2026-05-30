@@ -101,8 +101,13 @@ export function recordEngagementEvent<K extends EngagementEventKind>(
 
   let { accountId, routerDealId } = input;
 
-  // --- resolve routerDealId → accountId ---
-  if (!accountId && routerDealId) {
+  // --- Ground the (accountId, routerDealId) pair in gtmHandoffImports. ---
+  // routerDealId is the canonical key (it is the table's primary key, so the
+  // lookup is unambiguous); accountId is always verified against it. Resolving
+  // the reverse direction (accountId → routerDealId) is only safe when the
+  // account owns exactly one handoff — otherwise the deal is genuinely
+  // ambiguous and the caller must name it explicitly.
+  if (routerDealId) {
     const handoff = db
       .select({ accountId: schema.gtmHandoffImports.accountId })
       .from(schema.gtmHandoffImports)
@@ -111,23 +116,30 @@ export function recordEngagementEvent<K extends EngagementEventKind>(
     if (!handoff) {
       throw new Error(`No gtmHandoffImport found for routerDealId: ${routerDealId}`);
     }
+    if (accountId && accountId !== handoff.accountId) {
+      throw new Error(
+        `accountId ${accountId} does not match routerDealId ${routerDealId} ` +
+          `(linked to account ${handoff.accountId})`,
+      );
+    }
     accountId = handoff.accountId;
-  }
-
-  // --- resolve accountId → routerDealId ---
-  if (!routerDealId && accountId) {
-    const handoff = db
+  } else if (accountId) {
+    const handoffs = db
       .select({ routerDealId: schema.gtmHandoffImports.routerDealId })
       .from(schema.gtmHandoffImports)
       .where(eq(schema.gtmHandoffImports.accountId, accountId))
-      .get();
-    if (!handoff) {
+      .all();
+    if (handoffs.length === 0) {
       throw new Error(`No gtmHandoffImport found for accountId: ${accountId}`);
     }
-    routerDealId = handoff.routerDealId;
-  }
-
-  if (!accountId || !routerDealId) {
+    if (handoffs.length > 1) {
+      throw new Error(
+        `accountId ${accountId} maps to multiple router deals ` +
+          `(${handoffs.map((h) => h.routerDealId).join(', ')}); supply routerDealId explicitly`,
+      );
+    }
+    routerDealId = handoffs[0]!.routerDealId;
+  } else {
     throw new Error('Must supply at least one of accountId or routerDealId');
   }
 
@@ -150,6 +162,22 @@ export function recordEngagementEvent<K extends EngagementEventKind>(
 
     // Side-effect: for a `sent` event tied to a touch, mark it sent.
     if (input.kind === 'sent' && touchId) {
+      // The touch must belong to this event's account (touch → sequence →
+      // account). A `sent` event carrying another account's touchId is
+      // malformed — reject it loudly rather than silently flipping a foreign
+      // touch to `sent`. (The throw rolls back the engagement insert above.)
+      const owner = tx
+        .select({ accountId: schema.sequences.accountId })
+        .from(schema.touches)
+        .innerJoin(schema.sequences, eq(schema.touches.sequenceId, schema.sequences.id))
+        .where(eq(schema.touches.id, touchId))
+        .get();
+      if (owner && owner.accountId !== accountId) {
+        throw new Error(
+          `sent event touch ${touchId} does not belong to account ${accountId} ` +
+            `(belongs to ${owner.accountId})`,
+        );
+      }
       tx
         .update(schema.touches)
         .set({ status: 'sent', sentAt: input.occurredAt })

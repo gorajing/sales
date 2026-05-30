@@ -401,3 +401,83 @@ describe('idempotency key uniqueness', () => {
     ).toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Identifier consistency: the (accountId, routerDealId) pair and the touch a
+// `sent` event writes to must be grounded in gtmHandoffImports / the account.
+// ---------------------------------------------------------------------------
+describe('identifier consistency guards', () => {
+  it('throws when supplied accountId and routerDealId are not linked in gtmHandoffImports', async () => {
+    const { db, s } = await getDb();
+    // deal_def belongs to acc_2 — NOT to acc_1.
+    db.insert(s.accounts).values({ id: 'acc_2', name: 'Globex' }).run();
+    db.insert(s.gtmHandoffImports).values({
+      routerDealId: 'deal_def', accountId: 'acc_2',
+      schemaVersion: 'gtm-ops-router.sales-handoff.v1', generatedAt: NOW,
+      accountName: 'Globex', routeKind: 'human_assisted', amountUsd: 5000,
+      sourceChannel: 'outbound', researchBrief: 'brief',
+      suggestedEvidenceQuestionsJson: [], payloadJson: '{}',
+    }).run();
+
+    expect(() =>
+      recordEngagementEvent({
+        kind: 'opportunity_created',
+        payload: { amountUsd: null, crmRef: null },
+        occurredAt: NOW,
+        source: 'sales_reported',
+        accountId: 'acc_1', // linked to deal_abc...
+        routerDealId: 'deal_def', // ...but deal_def belongs to acc_2
+      }),
+    ).toThrow(/does not match/);
+  });
+
+  it('throws when accountId maps to multiple router deals and routerDealId is omitted', async () => {
+    const { db, s } = await getDb();
+    // acc_1 now owns a second handoff — accountId→routerDealId is ambiguous.
+    db.insert(s.gtmHandoffImports).values({
+      routerDealId: 'deal_def', accountId: 'acc_1',
+      schemaVersion: 'gtm-ops-router.sales-handoff.v1', generatedAt: NOW,
+      accountName: 'Acme Corp', routeKind: 'human_assisted', amountUsd: 7000,
+      sourceChannel: 'outbound', researchBrief: 'brief',
+      suggestedEvidenceQuestionsJson: [], payloadJson: '{}',
+    }).run();
+
+    expect(() =>
+      recordEngagementEvent({
+        kind: 'opportunity_created',
+        payload: { amountUsd: null, crmRef: null },
+        occurredAt: NOW,
+        source: 'sales_reported',
+        accountId: 'acc_1', // maps to deal_abc AND deal_def
+      }),
+    ).toThrow(/multiple router deals/);
+  });
+
+  it('rejects a sent event whose touch belongs to another account, writing nothing', async () => {
+    const { db, s } = await getDb();
+    // acc_2 owns sequence sq_2 / touch to_3 (ready).
+    db.insert(s.accounts).values({ id: 'acc_2', name: 'Globex' }).run();
+    db.insert(s.sequences).values({ id: 'sq_2', accountId: 'acc_2' }).run();
+    db.insert(s.touches).values({
+      id: 'to_3', sequenceId: 'sq_2', position: 1, channel: 'email', status: 'ready',
+    }).run();
+
+    expect(() =>
+      recordEngagementEvent({
+        kind: 'sent',
+        payload: { touchId: 'to_3', channel: 'email' }, // acc_2's touch
+        occurredAt: NOW,
+        source: 'sales_observed',
+        accountId: 'acc_1', // event is for acc_1
+        routerDealId: 'deal_abc',
+      }),
+    ).toThrow(/does not belong to account/);
+
+    const { eq } = await import('drizzle-orm');
+    // The cross-account touch is untouched and the whole transaction rolled back.
+    const touch = db.select().from(s.touches).where(eq(s.touches.id, 'to_3')).get();
+    expect(touch?.status).toBe('ready');
+    const events = db.select().from(s.engagementEvents).all();
+    expect(events).toHaveLength(0);
+  });
+});
