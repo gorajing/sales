@@ -18,10 +18,15 @@ vi.mock('@/db', async () => {
   sqlite.pragma('foreign_keys = ON');
   const db = _drizzle(sqlite, { schema: _schema });
   _migrate(db, { migrationsFolder: _path.resolve(_dirname, '../../db/migrations') });
-  return { db, schema: _schema };
+  // Honest: this mock IS an explicit in-memory DB, never the default dev DB,
+  // so usingDefaultDbPath is false. seedEngagementDemo's guard reads this.
+  return { db, schema: _schema, usingDefaultDbPath: false };
 });
 
-import { seedEngagementDemo } from '../../lib/engagement/demo';
+import {
+  seedEngagementDemo,
+  assertNotDefaultDevDb,
+} from '../../lib/engagement/demo';
 import { buildEngagementFeedback } from '../../lib/engagement/export';
 
 const SAMPLE_PATH = new URL(
@@ -77,5 +82,23 @@ describe('engagement demo (cross-repo loop closure)', () => {
     const touch = db.select().from(s.touches).where(eq(s.touches.id, 'ryder-touch-1')).get();
     expect(touch?.status).toBe('sent');
     expect(touch?.sentAt).toBe('2026-05-01T09:00:00.000Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Safety guard: seedEngagementDemo is destructive (it clears tables), so it
+// must refuse to run against the real dev DB.
+// ---------------------------------------------------------------------------
+describe('assertNotDefaultDevDb', () => {
+  it('throws when @/db fell back to the default dev DB', () => {
+    expect(() => assertNotDefaultDevDb(true)).toThrow(/dev DB/);
+  });
+
+  it('allows an explicit (throwaway) db path', () => {
+    expect(() => assertNotDefaultDevDb(false)).not.toThrow();
+  });
+
+  it('allows undefined (mock omits the flag — test context)', () => {
+    expect(() => assertNotDefaultDevDb(undefined)).not.toThrow();
   });
 });
