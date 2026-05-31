@@ -80,14 +80,20 @@ function emit(row: {
   occurredAt: string;
   payloadJson: Record<string, unknown>;
 }): Record<string, unknown> {
-  // Spread payloadJson FIRST so the authoritative columns (kind/eventId/
-  // occurredAt) always win — a payload that happens to carry those keys must
-  // never shadow the trusted column values (they also drive deterministic sort).
+  // Columns are authoritative: strip any kind/eventId/occurredAt the payload
+  // might carry (so it can never shadow the trusted column values, which also
+  // drive the deterministic sort), THEN place the columns first. Emitting
+  // {kind, eventId, occurredAt, ...payload} matches the contract's canonical
+  // key order so the demo sample is byte-identical to the router's fixture.
+  const rest: Record<string, unknown> = { ...row.payloadJson };
+  delete rest.kind;
+  delete rest.eventId;
+  delete rest.occurredAt;
   return {
-    ...row.payloadJson,
     kind: row.kind,
     eventId: row.eventId,
     occurredAt: row.occurredAt,
+    ...rest,
   };
 }
 

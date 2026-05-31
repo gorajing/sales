@@ -488,6 +488,10 @@ describe('emitted object uses authoritative columns', () => {
     expect(ev.eventId).toBe('evt_col'); // column, not 'evt_payload'
     expect(ev.occurredAt).toBe('2026-05-10T09:00:00.000Z'); // column, not 2030
     expect(ev.channel).toBe('email'); // genuine payload field preserved
+    // Key order is {kind, eventId, occurredAt, ...payload} — required for the
+    // demo sample to be byte-identical to the router's committed fixture (and
+    // the shadowing payload keys must be stripped, not reordered to the end).
+    expect(Object.keys(ev)).toEqual(['kind', 'eventId', 'occurredAt', 'touchId', 'channel']);
   });
 });
 

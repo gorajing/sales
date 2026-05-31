@@ -15,7 +15,8 @@
     "db:migrate": "tsx db/migrate.ts",
     "import:gtm-handoff": "tsx scripts/import-gtm-handoff.ts",
     "export:engagement-feedback": "tsx scripts/export-engagement-feedback.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "gen:engagement-sample": "tsx scripts/gen-engagement-sample.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
