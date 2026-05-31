@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from 'drizzle-orm/sqlite-core';
+import { sqliteTable, text, integer, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 export const accounts = sqliteTable('accounts', {
@@ -152,6 +152,32 @@ export const deliverableAccounts = sqliteTable('deliverable_accounts', {
   sequenceId: text('sequence_id'),
   createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
 });
+
+export const engagementEvents = sqliteTable(
+  'engagement_events',
+  {
+    id: text('id').primaryKey(),
+    accountId: text('account_id').notNull().references(() => accounts.id),
+    routerDealId: text('router_deal_id').notNull(),
+    touchId: text('touch_id').references(() => touches.id),
+    kind: text('kind', {
+      enum: ['sent', 'replied', 'meeting_booked', 'bounced', 'no_response', 'opportunity_created'],
+    }).notNull(),
+    eventId: text('event_id').notNull(),
+    occurredAt: text('occurred_at').notNull(),
+    source: text('source', {
+      enum: ['sales_observed', 'sales_window_evaluator', 'sales_reported'],
+    }).notNull(),
+    payloadJson: text('payload_json', { mode: 'json' })
+      .$type<Record<string, unknown>>().notNull(),
+    createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (t) => [
+    uniqueIndex('engagement_events_router_deal_kind_event_idx').on(
+      t.routerDealId, t.kind, t.eventId,
+    ),
+  ],
+);
 
 export const gtmHandoffImports = sqliteTable('gtm_handoff_imports', {
   routerDealId: text('router_deal_id').primaryKey(),
