@@ -1,5 +1,25 @@
-import { db, schema } from '@/db';
+import { db, schema, usingDefaultDbPath } from '@/db';
 import { recordEngagementEvent, type RecordEngagementEventInput } from './record';
+
+/**
+ * Refuse to run destructive demo seeding against the real dev DB.
+ *
+ * `usingDefaultDb` comes from @/db (`usingDefaultDbPath`): it is `true` when the
+ * opened handle IS the default dev DB (data/sales.db) — including when an
+ * explicit SALES_DB_PATH points back at it. The flag is captured at open time
+ * beside the handle, so it never drifts from the actual DB. Under the test mock
+ * it is `false` (explicit in-memory) or `undefined` (mock omits it); both safe.
+ * The generator sets SALES_DB_PATH to a temp dir, so it is `false`.
+ */
+export function assertNotDefaultDevDb(usingDefaultDb: boolean | undefined): void {
+  if (usingDefaultDb) {
+    throw new Error(
+      'seedEngagementDemo: refusing to run against the default dev DB (data/sales.db); ' +
+        'it is destructive (clears tables). Set SALES_DB_PATH to a throwaway ' +
+        "location, or use 'pnpm gen:engagement-sample'.",
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Deterministic engagement demo.
@@ -169,6 +189,8 @@ function insertHandoff(routerDealId: string, accountId: string, accountName: str
  * the engagement-related tables first so it is idempotent on re-run.
  */
 export function seedEngagementDemo(): void {
+  assertNotDefaultDevDb(usingDefaultDbPath);
+
   db.delete(schema.engagementEvents).run();
   db.delete(schema.touches).run();
   db.delete(schema.sequences).run();
