@@ -51,6 +51,12 @@ pnpm dev   # http://localhost:3000
 The account shows the router seed and a "research seed only" trace warning; the
 Evidence table stays empty until you capture and audit public sources.
 
+The loop is bidirectional. Sales also **produces** observed engagement back to the
+router as a versioned `sales.engagement-feedback.v1` payload (`export:engagement-feedback`),
+which `gtm-ops-router` imports to compute attribution and coverage — closing the
+GTM loop. The reverse contract is byte-for-byte: the frozen `gen:engagement-sample`
+reproduces the router's committed engagement sample exactly.
+
 ## Requirements
 - macOS with the `claude` CLI installed and logged into a Claude Max 20 account
 - Node.js 20.9+, pnpm
