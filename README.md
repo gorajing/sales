@@ -2,6 +2,8 @@
 
 Personal, local-first B2B sales research-and-outreach tool. Every factual claim in every draft traces to a verified evidence row. Drafts are critiqued against a user-owned principles file. Every revision is preserved.
 
+![Sales demo](assets/demo.gif)
+
 ## Companion GTM control plane
 
 This repo owns evidence-grounded research and outreach. The companion

@@ -1,0 +1,20 @@
+{
+  "$schema": "cinematic-explainer-timeline-v1",
+  "output": "sales-explainer.mp4",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "transition": 0.35,
+  "fade_in": 0.25,
+  "fade_out": 0.45,
+  "clips": [
+    { "id": "open", "file": "clips/01-open.mp4", "duration": 5.4 },
+    { "id": "import", "file": "clips/02-import.mp4", "duration": 5.4 },
+    { "id": "boundary", "file": "clips/03-boundary.mp4", "duration": 5.4 },
+    { "id": "draft-contract", "file": "clips/04-draft-contract.mp4", "duration": 5.4 },
+    { "id": "critics", "file": "clips/05-critics.mp4", "duration": 5.4 },
+    { "id": "feedback", "file": "clips/06-feedback.mp4", "duration": 5.4 },
+    { "id": "proof", "file": "clips/07-proof.mp4", "duration": 5.4 },
+    { "id": "close", "file": "clips/08-close.mp4", "duration": 5.4 }
+  ]
+}
