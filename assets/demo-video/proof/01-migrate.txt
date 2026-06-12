@@ -1,0 +1,5 @@
+
+> sales@0.1.0 db:migrate /Users/jinchoi/Code/Sales
+> tsx db/migrate.ts
+
+Migrations applied.

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "sales.engagement-feedback.v1",
+  "coverage": {
+    "complete": false,
+    "scanned": 9,
+    "emitted": 4,
+    "since": null
+  },
+  "deals": 4,
+  "firstDeal": "D-8eb789ad84fc",
+  "lastDeal": "D-fb65c15017ef",
+  "commercialSignals": 1
+}

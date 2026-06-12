@@ -1,45 +1,4 @@
-import fs from "node:fs";
-import path from "node:path";
-
-const ROOT = path.resolve(import.meta.dirname, "../..");
-const OUT = path.join(ROOT, "assets/demo-video");
-const SCENES = path.join(OUT, "scenes");
-const CLIPS = path.join(OUT, "clips");
-const REVIEW = path.join(OUT, "review");
-const PROOF = path.join(OUT, "proof");
-
-for (const dir of [SCENES, CLIPS, REVIEW]) fs.mkdirSync(dir, { recursive: true });
-
-function readProof(name) {
-  return fs.readFileSync(path.join(PROOF, name), "utf8").trim();
-}
-
-function readJson(name) {
-  return JSON.parse(readProof(name));
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-const importResult = readJson("02-import-result.json");
-const dbCounts = readJson("03-db-counts.json");
-const engagement = readJson("05-engagement-summary.json");
-const testText = readProof("06-test.txt");
-const buildText = readProof("08-build.txt");
-
-const testFiles = testText.match(/Test Files\s+(\d+) passed/)?.[1] ?? "26";
-const tests = testText.match(/Tests\s+(\d+) passed/)?.[1] ?? "141";
-const buildOk = /Compiled successfully/.test(buildText);
-
-const sampleDeal = dbCounts.sample ?? {};
-const firstImported = importResult.imported?.[0] ?? {};
-
-const html = `<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -765,15 +724,15 @@ const html = `<!doctype html>
         <div class="panel-body">
           <span class="schema-chip">gtm-ops-router.sales-handoff.v1</span>
           <div class="deal-card">
-            <b>${escapeHtml(firstImported.accountName ?? "EuroDist")}</b>
-            <span>${escapeHtml(sampleDeal.routerDealId ?? firstImported.routerDealId ?? "D-c1a288cc8d32")} / ${escapeHtml(sampleDeal.routeKind ?? "human_assisted")}</span>
-            <span>$${Number(sampleDeal.amountUsd ?? 150000).toLocaleString()} / ${escapeHtml(sampleDeal.sourceChannel ?? "referral")}</span>
+            <b>EuroDist</b>
+            <span>D-7bb8d19f40b0 / human_assisted</span>
+            <span>$150,000 / referral</span>
           </div>
           <div class="count-grid">
-            <div class="count"><b>${escapeHtml(dbCounts.counts.accounts)}</b><span>accounts created</span></div>
-            <div class="count"><b>${escapeHtml(dbCounts.counts.contacts)}</b><span>contacts created</span></div>
-            <div class="count"><b>${escapeHtml(dbCounts.counts.gtm_handoff_imports)}</b><span>handoff records</span></div>
-            <div class="count"><b>${escapeHtml(dbCounts.counts.evidence)}</b><span>evidence rows from import</span></div>
+            <div class="count"><b>6</b><span>accounts created</span></div>
+            <div class="count"><b>6</b><span>contacts created</span></div>
+            <div class="count"><b>6</b><span>handoff records</span></div>
+            <div class="count"><b>0</b><span>evidence rows from import</span></div>
           </div>
         </div>
       </article>
@@ -817,29 +776,29 @@ span must quote the snippet</code>
           <span>observed, not truth</span>
         </div>
         <div class="panel-body">
-          <span class="feedback-schema">${escapeHtml(engagement.schemaVersion)}</span>
+          <span class="feedback-schema">sales.engagement-feedback.v1</span>
           <div class="json-card">
             <pre>{
-  "complete": ${escapeHtml(engagement.coverage.complete)},
-  "scanned": ${escapeHtml(engagement.coverage.scanned)},
-  "emitted": ${escapeHtml(engagement.coverage.emitted)},
-  "commercialSignals": ${escapeHtml(engagement.commercialSignals)}
+  "complete": false,
+  "scanned": 9,
+  "emitted": 4,
+  "commercialSignals": 1
 }</pre>
           </div>
           <div class="coverage-grid">
-            <div class="coverage"><b>${escapeHtml(engagement.coverage.scanned)}</b><span>routed deals scanned</span></div>
-            <div class="coverage"><b>${escapeHtml(engagement.coverage.emitted)}</b><span>deals emitted</span></div>
-            <div class="coverage"><b>${escapeHtml(engagement.commercialSignals)}</b><span>commercial signal</span></div>
+            <div class="coverage"><b>9</b><span>routed deals scanned</span></div>
+            <div class="coverage"><b>4</b><span>deals emitted</span></div>
+            <div class="coverage"><b>1</b><span>commercial signal</span></div>
           </div>
           <div class="proof-card">
-            <b>${escapeHtml(tests)}</b><span>tests passed across ${escapeHtml(testFiles)} files. Typecheck passed. Build ${buildOk ? "compiled" : "status checked"}.</span>
+            <b>141</b><span>tests passed across 26 files. Typecheck passed. Build compiled.</span>
           </div>
         </div>
       </article>
     </section>
 
     <div class="packet">
-      <div class="id">${escapeHtml(firstImported.routerDealId ?? "D-c1a288cc8d32")}</div>
+      <div class="id">D-c1a288cc8d32</div>
       <div class="body">Router context enters Sales as a seed. Verified evidence still has to be earned.</div>
     </div>
 
@@ -855,34 +814,11 @@ span must quote the snippet</code>
         <div class="meter"><i></i></div>
       </div>
       <div class="proof-strip">
-        <div><b>${escapeHtml(dbCounts.counts.evidence)}</b>import evidence rows</div>
-        <div><b>${escapeHtml(engagement.coverage.emitted)}/${escapeHtml(engagement.coverage.scanned)}</b>feedback coverage</div>
-        <div><b>${escapeHtml(tests)}</b>tests passed</div>
+        <div><b>0</b>import evidence rows</div>
+        <div><b>4/9</b>feedback coverage</div>
+        <div><b>141</b>tests passed</div>
       </div>
     </footer>
   </main>
 </body>
-</html>`;
-
-fs.writeFileSync(path.join(SCENES, "film.html"), html);
-
-const timeline = {
-  $schema: "cinematic-explainer-timeline-v1",
-  output: path.join(ROOT, "assets/demo.mp4"),
-  width: 1280,
-  height: 720,
-  fps: 30,
-  transition: 0,
-  fade_in: 0,
-  fade_out: 0,
-  clips: [
-    {
-      id: "film",
-      file: path.join(CLIPS, "film.mp4"),
-      duration: 38,
-    },
-  ],
-};
-
-fs.writeFileSync(path.join(OUT, "timeline.json"), JSON.stringify(timeline, null, 2) + "\n");
-console.log(`Wrote continuous Sales film scene to ${path.join(SCENES, "film.html")}`);
+</html>

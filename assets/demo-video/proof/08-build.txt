@@ -1,0 +1,70 @@
+
+> sales@0.1.0 build /Users/jinchoi/Code/Sales
+> next build
+
+▲ Next.js 16.2.4 (Turbopack)
+- Environments: .env.local
+
+  Creating an optimized production build ...
+Turbopack build encountered 1 warnings:
+./next.config.ts
+Encountered unexpected file in NFT list
+A file was traced that indicates that the whole project was traced unintentionally. Somewhere in the import trace below, there are:
+- filesystem operations (like path.join, path.resolve or fs.readFile), or
+- very dynamic requires (like require('./' + foo)).
+To resolve this, you can
+- remove them if possible, or
+- only use them in development, or
+- make sure they are statically scoped to some subfolder: path.join(process.cwd(), 'data', bar), or
+- add ignore comments: path.join(/*turbopackIgnore: true*/ process.cwd(), bar)
+
+Import trace:
+  App Route:
+    ./next.config.ts
+    ./lib/claude/run.ts
+    ./app/api/evidence/audit/route.ts
+
+
+✓ Compiled successfully in 1666ms
+  Running TypeScript ...
+  Finished TypeScript in 2.3s ...
+  Collecting page data using 9 workers ...
+  Generating static pages using 9 workers (0/17) ...
+  Generating static pages using 9 workers (4/17) 
+  Generating static pages using 9 workers (8/17) 
+  Generating static pages using 9 workers (12/17) 
+✓ Generating static pages using 9 workers (17/17) in 77ms
+  Finalizing page optimization ...
+
+Route (app)
+┌ ƒ /
+├ ○ /_not-found
+├ ƒ /accounts/[id]
+├ ƒ /accounts/[id]/contacts
+├ ƒ /accounts/[id]/contacts/new
+├ ƒ /accounts/[id]/evidence
+├ ƒ /accounts/[id]/sequences
+├ ƒ /accounts/[id]/sequences/[sid]
+├ ƒ /accounts/[id]/sequences/new
+├ ○ /accounts/new
+├ ƒ /api/accounts
+├ ƒ /api/contacts
+├ ƒ /api/deliverables
+├ ƒ /api/evidence/audit
+├ ƒ /api/evidence/paste
+├ ƒ /api/evidence/research
+├ ƒ /api/export
+├ ƒ /api/sequences
+├ ƒ /api/touches/claim-audit
+├ ƒ /api/touches/critique
+├ ƒ /api/touches/draft
+├ ƒ /api/touches/import
+├ ƒ /api/touches/revise
+├ ƒ /deliverables
+├ ƒ /deliverables/[id]
+└ ○ /deliverables/new
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+

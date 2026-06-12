@@ -1,0 +1,5 @@
+
+> sales@0.1.0 gen:engagement-sample /Users/jinchoi/Code/Sales
+> tsx scripts/gen-engagement-sample.ts
+
+wrote /Users/jinchoi/Code/Sales/data/engagement-feedback.sample.json

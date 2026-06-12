@@ -1,0 +1,13 @@
+
+> sales@0.1.0 test /Users/jinchoi/Code/Sales
+> vitest run
+
+
+ RUN  v4.1.4 /Users/jinchoi/Code/Sales
+
+
+ Test Files  26 passed (26)
+      Tests  141 passed (141)
+   Start at  23:49:14
+   Duration  1.58s (transform 1.25s, setup 0ms, import 8.09s, tests 521ms, environment 2ms)
+

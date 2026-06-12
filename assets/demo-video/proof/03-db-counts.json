@@ -1,0 +1,14 @@
+{
+  "counts": {
+    "accounts": 6,
+    "contacts": 6,
+    "gtm_handoff_imports": 6,
+    "evidence": 0
+  },
+  "sample": {
+    "routerDealId": "D-7bb8d19f40b0",
+    "routeKind": "human_assisted",
+    "amountUsd": 150000,
+    "sourceChannel": "referral"
+  }
+}

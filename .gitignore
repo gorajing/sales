@@ -11,6 +11,7 @@ dist/
 build/
 *.log
 tsconfig.tsbuildinfo
+assets/demo-video/.cinematic-tmp/
 
 # Private, local-only artifacts — never commit to a public repo:
 # the application package is target-specific (names the real company),

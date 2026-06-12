@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "gtm-ops-router.sales-handoff.v1",
+  "generatedAt": "2026-05-28T07:26:01.679Z",
+  "processed": 6,
+  "accountsCreated": 6,
+  "accountsUpdated": 0,
+  "contactsCreated": 6,
+  "contactsUpdated": 0,
+  "handoffsCreated": 6,
+  "handoffsUpdated": 0,
+  "imported": [
+    {
+      "routerDealId": "D-c1a288cc8d32",
+      "accountId": "acc_20260612_e94fe8a1c9",
+      "accountName": "EuroDist",
+      "contactId": "ct_20260612_c79a09419e"
+    },
+    {
+      "routerDealId": "D-7bb8d19f40b0",
+      "accountId": "acc_20260612_92e8e2c49c",
+      "accountName": "Britannia Haulage",
+      "contactId": "ct_20260612_7d9a9dcae4"
+    },
+    {
+      "routerDealId": "D-a2ff6592e43f",
+      "accountId": "acc_20260612_de45a7713e",
+      "accountName": "Globex Foods",
+      "contactId": "ct_20260612_1916c73d47"
+    },
+    {
+      "routerDealId": "D-8eb789ad84fc",
+      "accountId": "acc_20260612_b522845ac3",
+      "accountName": "Acme Retail",
+      "contactId": "ct_20260612_289b826fe2"
+    },
+    {
+      "routerDealId": "D-cdea8ac45022",
+      "accountId": "acc_20260612_da84c8f7b7",
+      "accountName": "Cargo Loop",
+      "contactId": "ct_20260612_fde2b0afd3"
+    },
+    {
+      "routerDealId": "D-fb65c15017ef",
+      "accountId": "acc_20260612_983f27dbff",
+      "accountName": "Ryder Digital",
+      "contactId": "ct_20260612_8b272c0950"
+    }
+  ],
+  "databasePath": "/tmp/sales-video-db.NHH2eg/sales.db"
+}

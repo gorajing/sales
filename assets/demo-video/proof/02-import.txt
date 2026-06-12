@@ -1,0 +1,5 @@
+
+> sales@0.1.0 import:gtm-handoff /Users/jinchoi/Code/Sales
+> tsx scripts/import-gtm-handoff.ts -- ../gtm-ops-router/data/sales-handoff.sample.json --out assets/demo-video/proof/02-import-result.json
+
+Imported 6 GTM handoff account(s); wrote result to /Users/jinchoi/Code/Sales/assets/demo-video/proof/02-import-result.json
