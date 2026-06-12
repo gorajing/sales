@@ -1,51 +1,31 @@
 # Sales Demo Storyboard
 
-Target length: 40-42 seconds. Silent, captioned, code-grounded, with GitHub README delivery as an optimized inline GIF.
+Target length: 38 seconds. Silent, captioned, code-grounded, delivered to the README as an optimized inline GIF backed by a 1280x720 MP4 source.
 
-## Beat 1: Open
+## Continuous Film
 
-Caption: `Outbound that keeps receipts.`
+The demo is one continuous workspace rather than a slide sequence. Three panels stay anchored throughout:
 
-Proof: README positions Sales as local-first B2B research/outreach where every factual claim traces to verified evidence.
+- Left: `gtm-ops-router` handoff as context seed.
+- Center: Sales workbench, evidence boundary, draft contract, and critic review.
+- Right: engagement feedback export plus runtime proof.
 
-## Beat 2: Import
+## Beats
 
-Caption: `Router context enters as a seed.`
+| Time | Beat | On-screen proof |
+| --- | --- | --- |
+| 0-7s | Open | Sales is a local-first sales ops workbench for receipt-backed outbound. |
+| 7-11s | Bridge | Router seed -> Sales workbench -> router feedback. |
+| 11-16s | Import | Sample handoff import creates 6 accounts, 6 contacts, 6 handoff records, and 0 evidence rows. |
+| 16-22s | Boundary | Screenshots show router context preserved while evidence remains empty until verified. |
+| 22-27s | Draft contract | Draft output must cite verified evidence IDs and quote supporting spans. |
+| 27-31s | Critics | Skeptical Buyer, Sales Coach, and Writing Editor review the draft. |
+| 31-35s | Feedback | Sales exports `sales.engagement-feedback.v1` with incomplete coverage reported honestly. |
+| 35-38s | Proof | `pnpm test`, `pnpm typecheck`, and `pnpm build` pass on the current repo. |
 
-Proof: Migrated temp DB plus `pnpm import:gtm-handoff -- ../gtm-ops-router/data/sales-handoff.sample.json` processed 6 accounts, created 6 accounts, 6 contacts, and 6 handoff records.
+## Visual Notes
 
-## Beat 3: Boundary
-
-Caption: `Research seed only. Not verified evidence.`
-
-Proof: App account page shows the warning, while the Evidence page remains empty until facts are captured and audited.
-
-## Beat 4: Draft Contract
-
-Caption: `Drafts can only cite verified rows.`
-
-Proof: README and `lib/evidence/validate.ts` require `cited_evidence_ids` and verbatim `supporting_spans`.
-
-## Beat 5: Critics
-
-Caption: `Three critics review every draft.`
-
-Proof: README lists Skeptical Buyer, Sales Coach, and Writing Editor; `data/principles.md` is the user-owned Sales Coach rubric.
-
-## Beat 6: Engagement Feedback
-
-Caption: `The loop closes back to the router.`
-
-Proof: `pnpm gen:engagement-sample` writes `sales.engagement-feedback.v1` with coverage `complete:false`, `scanned:9`, `emitted:4`, four deals, and one commercial signal.
-
-## Beat 7: Runtime Proof
-
-Caption: `The current suite passes.`
-
-Proof: `pnpm test` reports 26 test files and 141 tests passing; `pnpm typecheck` passes; `pnpm build` compiles successfully.
-
-## Beat 8: Close
-
-Caption: `Sales is a proof-gated outreach workbench.`
-
-Proof: README architecture: evidence, drafting, critique, and feedback export are separate contract layers.
+- Keep the frame calm: do not show the draft contract and critic cards as competing full-strength layers.
+- Let captions take turns; avoid bottom-line ghosting between beats.
+- Keep the proof card above the persistent bottom proof strip.
+- Use the 900px, 12fps GIF for README display. Keep MP4 as the high-resolution source, not the README embed.
